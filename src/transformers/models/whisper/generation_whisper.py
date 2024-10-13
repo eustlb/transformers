@@ -723,14 +723,7 @@ class WhisperGenerationMixin(GenerationMixin):
                     return_token_timestamps=return_token_timestamps,
                 )
 
-                seek[prev_i] += segment_offset 
-   
-                # we never remove eos token in generate_with_fallback so we do it here
-                if seek[prev_i] < max_frames[prev_i]: 
-                    if seek_sequence[-1] == generation_config.eos_token_id:
-                        seek_sequence = seek_sequence[:-1]
-                        if return_token_timestamps:
-                            seek_outputs[i]["token_timestamps"] = seek_outputs[i]["token_timestamps"][:-1]
+                seek[prev_i] += segment_offset     
 
                 current_segments[prev_i] += segments
 
@@ -910,6 +903,12 @@ class WhisperGenerationMixin(GenerationMixin):
                     decoder_input_ids,
                 )
 
+                # remove eos token 
+                if seek_sequence[-1] == generation_config.eos_token_id:
+                    seek_sequence = seek_sequence[:-1]
+                    if return_token_timestamps:
+                        seek_outputs[i]["token_timestamps"] = seek_outputs[i]["token_timestamps"][:-1]
+
                 seek_sequence_list[fallback_index_map[i]] = seek_sequence
                 seek_outputs_list[fallback_index_map[i]] = seek_outputs[i]
                 is_low_temperature = temperature is None or temperature < 0.5
@@ -956,7 +955,7 @@ class WhisperGenerationMixin(GenerationMixin):
     ):
         # remove all previously passed decoder input ids
         # should happen only if it is the first generated segment
-        start_idx = decoder_input_ids.shape[-1] if not is_first_segment else torch.tensor(0)
+        start_idx = torch.tensor(0)
 
         if isinstance(seek_outputs, torch.Tensor):
             seek_outputs = seek_outputs[:, start_idx:]
@@ -1688,19 +1687,7 @@ class WhisperGenerationMixin(GenerationMixin):
 
         if any(do_condition_on_prev_tokens) and len(current_segments[0]) > 0:
             # according to https://github.com/openai/whisper/blob/e58f28804528831904c3b6f2c0e473f346223433/whisper/decoding.py#L609
-            
-            # we need to remove the decoder_input_ids for the first segment and the eos token id for the last
-            active_segments = []
-            for i in batch_idx_map:
-                if do_condition_on_prev_tokens[i]:
-                    start_idx = len(init_tokens[i])
-                    segments_tokens = [current_segments[i][0]["tokens"][start_idx: ]]
-                    segments_tokens.extend(seg["tokens"] for seg in current_segments[i][1: ])
-                    active_segments.append(
-                        [{"tokens": toks} for toks in segments_tokens]
-                    )
-                else:
-                    active_segments.append(None)
+            active_segments = [current_segments[i] if do_condition_on_prev_tokens[i] else None for i in batch_idx_map]
 
             if prompt_ids is not None and generation_config.prompt_condition_type == "all-segments":
                 prev_ids = prompt_ids
@@ -1774,11 +1761,6 @@ class WhisperGenerationMixin(GenerationMixin):
         rescale_temperature = temperature if temperature > 0.0 else 1
         scores = torch.stack(scores).to(tokens.device)
 
-        # if we are on the first segment, we need to remove the decoder_input_ids
-        # this way we ensure scores and tokens are aligned (scores starts with the first generated token)
-        if is_first_segment:
-            tokens = tokens[decoder_input_ids.shape[-1]:]
-
         if scores.shape[0] > tokens.shape[0]:
             scores = scores[: tokens.shape[0]]
         else:
@@ -1809,8 +1791,7 @@ class WhisperGenerationMixin(GenerationMixin):
         # find the predicted "end of segment" predictions of Whisper
         # "end of segment" predictions occur whenever Whisper predicts a timestamp token
         timestamp_tokens: torch.Tensor = seek_sequence.ge(timestamp_begin)
-        # here we had the fact that we have the eos token at the end of the sequence
-        single_timestamp_ending = timestamp_tokens[-3:].tolist() == [False, True, False]  
+        single_timestamp_ending = timestamp_tokens[-2:].tolist() == [False, True]
         timestamp_segment_indices = torch.where(timestamp_tokens[:-1] & timestamp_tokens[1:])[0]
         timestamp_segment_indices.add_(1)
         token_timestamps = seek_outputs[idx]["token_timestamps"] if return_token_timestamps else []
