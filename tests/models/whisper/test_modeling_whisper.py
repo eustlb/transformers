@@ -2527,7 +2527,7 @@ class WhisperModelIntegrationTests(unittest.TestCase):
 
         assert (
             transcription
-            == "<|startoftranscript|><|hi|><|transcribe|><|notimestamps|> Mirchi mein ki tene vibinda prajatiya hai<|endoftext|>"
+            == " Mirchi mein ki tene vibinda prajatiya hai"
         )
 
         # set task to translate
@@ -2536,7 +2536,7 @@ class WhisperModelIntegrationTests(unittest.TestCase):
 
         assert (
             transcription
-            == "<|startoftranscript|><|hi|><|translate|><|notimestamps|> How much is the difference between the girls?<|endoftext|>"
+            == " How much is the difference between the girls?"
         )
 
     @slow
@@ -2560,7 +2560,7 @@ class WhisperModelIntegrationTests(unittest.TestCase):
 
         transcription = processor.batch_decode(sequences, skip_special_tokens=False)[0]
 
-        assert transcription == "<|startoftranscript|><|hi|><|transcribe|> मिर्ची में कितने विबिन्द प्रजातियां हैं? मिर्ची में कितने विबिन्द प्रजातियां हैं?<|endoftext|>"
+        assert transcription == " मिर्ची में कितने विबिन्द प्रजातियां हैं? मिर्ची में कितने विबिन्द प्रजातियां हैं?"
 
         # set task to translate
         sequences = model.generate(input_features, task="translate", return_timestamps=True)
@@ -2568,7 +2568,7 @@ class WhisperModelIntegrationTests(unittest.TestCase):
 
         assert (
             transcription
-            == "<|startoftranscript|><|hi|><|translate|> How many different species are there in the chilli? How many different species are there in the chilli?<|endoftext|>"
+            == " How many different species are there in the chilli? How many different species are there in the chilli?"
         )
 
     @slow
