@@ -1061,7 +1061,42 @@ class WhisperGenerationMixin(GenerationMixin):
 
         return sequence_tokens, seek_outputs
 
-    def _stack_split_outputs(self, seek_outputs, model_output_type, device, kwargs):
+    def _stack_split_outputs(self, final_segments, model_output_type, device, kwargs):
+        # we need to stack the stored results, and remove the part corresponding to the eos token
+        # each time we swith to a new result it means last token was eos tokens
+        seek_outputs = []
+        for segments in final_segments:
+            concatenated_outputs = {}
+
+            # Define how to concatenate different types of outputs
+            tensor_keys = ["sequences", "beam_indices"]
+            tuple_keys = ["scores", "logits", "decoder_attentions", "decoder_hidden_states", "cross_attentions"]
+
+            # keys to be voluntarily skipped should be forced to None, these are for the unsupported ones 
+            unsupported_keys = ["sequences_scores", "past_key_values"]
+
+            for segment in segments:
+                result, (start_idx, end_idx) = segment["result"], segment["idxs"]
+                for key, value in result.items():
+                    if value is None:
+                        # value is forced to None, meaning we should skip it 
+                        concatenated_outputs[key] = None
+                        continue
+
+                    if key not in concatenated_outputs:
+                        concatenated_outputs[key] = value[..., start_idx:end_idx] if key in tensor_keys else value[start_idx:end_idx]
+                        continue
+
+                    if key in unsupported_keys:
+                        raise ValueError(f"{key} concatenation is not yet implemented when multiple calls to generate")
+
+                    if key in tensor_keys:
+                        concatenated_outputs[key] = torch.cat([concatenated_outputs[key], value[..., start_idx:end_idx]], dim=-1)
+                    elif key in tuple_keys:
+                        # value is a tuple with one element per generated token
+                        concatenated_outputs[key] = concatenated_outputs[key] + value[start_idx:end_idx]
+            seek_outputs.append(concatenated_outputs)
+
         # Stack back seek_outputs tensors after splitting them with the split_by_batch_index method
         outputs = {}
         for key in seek_outputs[0].keys():
