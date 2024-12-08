@@ -1862,6 +1862,7 @@ class WhisperGenerationMixin(GenerationMixin):
                         "start": time_offset[prev_idx] + start_timestamp_pos.to(torch.float64) * time_precision,
                         "end": time_offset[prev_idx] + end_timestamp_pos.to(torch.float64) * time_precision,
                         "tokens": sliced_tokens,
+                        "idxs": (last_slice, current_slice),
                         "result": seek_outputs[idx],
                     }
                 )
@@ -1893,6 +1894,7 @@ class WhisperGenerationMixin(GenerationMixin):
                     "start": time_offset[prev_idx],
                     "end": time_offset[prev_idx] + last_timestamp_pos * time_precision,
                     "tokens": seek_sequence,
+                    "idxs": (0, len(seek_sequence)),
                     "result": seek_outputs[idx],
                 }
             ]
