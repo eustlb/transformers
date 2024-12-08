@@ -944,8 +944,6 @@ class WhisperGenerationMixin(GenerationMixin):
                 # remove eos token
                 if seek_sequence[-1] == generation_config.eos_token_id:
                     seek_sequence = seek_sequence[:-1]
-                    if return_token_timestamps:
-                        seek_outputs[i]["token_timestamps"] = seek_outputs[i]["token_timestamps"][:-1]
 
                 seek_sequence_list[fallback_index_map[i]] = seek_sequence
                 seek_outputs_list[fallback_index_map[i]] = seek_outputs[i]
