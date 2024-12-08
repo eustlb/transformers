@@ -927,7 +927,7 @@ class WhisperGenerationMixin(GenerationMixin):
                         num_paddings -= 1
                     if num_paddings != 0:
                         seek_sequence = seek_sequence[:-num_paddings]
-                        if return_token_timestamps and not is_shortform:
+                        if return_token_timestamps:
                             seek_outputs[i]["token_timestamps"] = seek_outputs[i]["token_timestamps"][:-num_paddings]
 
                 # check which sequences in batch need fallback & which should be skipped
