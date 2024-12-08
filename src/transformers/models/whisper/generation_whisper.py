@@ -784,41 +784,46 @@ class WhisperGenerationMixin(GenerationMixin):
         )
 
         # 8. If we return all segments, the predicted output sequences are put under `"sequences"`.
-        if return_segments:
-            return {"sequences": sequences, "segments": final_segments}
-
-        if is_shortform:
+        if not return_segments and not (return_dict_in_generate and generation_config.return_dict_in_generate):
             if return_token_timestamps:
-                outputs = {}
-                outputs["sequences"] = sequences
-                outputs["token_timestamps"] = torch.stack([d["token_timestamps"] for d in seek_outputs], dim=0)
+                outputs = {"sequences": sequences}
             else:
-                outputs = sequences
+                return sequences
+        
+        elif return_segments:
+            # if return_dict_in_generate is True, segments['result'] are ModelOutput
+            outputs = {"sequences": sequences, "segments": final_segments}
 
-            if return_dict_in_generate and generation_config.return_dict_in_generate:
-                dict_outputs = self._stack_split_outputs(seek_outputs, model_output_type, sequences.device, kwargs)
+        else:
+            # case where return_segments is False but and return_dict_in_generate is True
+            # outputs becomes a ModelOutput where we concatenate everything
+            outputs = self._stack_split_outputs(final_segments, model_output_type, sequences.device, kwargs)
+            if num_return_sequences > 1:
+                if hasattr(outputs, "encoder_attentions") and outputs.encoder_attentions is not None:
+                    outputs.encoder_attentions = tuple(
+                        outputs.encoder_attentions[i][::num_return_sequences]
+                        for i in range(len(outputs.encoder_attentions))
+                    )
+                if (
+                    hasattr(outputs, "encoder_hidden_states")
+                    and outputs.encoder_hidden_states is not None
+                ):
+                    outputs.encoder_hidden_states = tuple(
+                        outputs.encoder_hidden_states[i][::num_return_sequences]
+                        for i in range(len(outputs.encoder_hidden_states))
+                    )
 
-                if num_return_sequences > 1:
-                    if hasattr(dict_outputs, "encoder_attentions") and dict_outputs.encoder_attentions is not None:
-                        dict_outputs.encoder_attentions = tuple(
-                            dict_outputs.encoder_attentions[i][::num_return_sequences]
-                            for i in range(len(dict_outputs.encoder_attentions))
-                        )
-                    if (
-                        hasattr(dict_outputs, "encoder_hidden_states")
-                        and dict_outputs.encoder_hidden_states is not None
-                    ):
-                        dict_outputs.encoder_hidden_states = tuple(
-                            dict_outputs.encoder_hidden_states[i][::num_return_sequences]
-                            for i in range(len(dict_outputs.encoder_hidden_states))
-                        )
-                if return_token_timestamps:
-                    dict_outputs["token_timestamps"] = outputs["token_timestamps"]
-                return dict_outputs
+        if return_token_timestamps:
+            outputs["token_timestamps"] = torch.stack(
+                [
+                    torch.cat([seg["token_timestamps"][:seg["tokens"].shape[0]] for seg in segments])
+                    for segments in final_segments
+                ],
+                dim=0,
+            )  
 
-            return outputs
+        return outputs
 
-        return sequences
 
     def generate_with_fallback(
         self,
