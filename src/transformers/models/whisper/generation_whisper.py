@@ -134,9 +134,11 @@ def _pad_to_max_length(
     padding="longest",
     bos_token_tensor=None,
     cut_off_length=None,
+    return_token_timestamps=False,
 ):
     max_total_length = 0
     sequences = []
+    token_timestamps_list = []
 
     if padding_side not in ["right", "left"]:
         raise ValueError(f"`padding_side` must be either 'right' or 'left', not {padding_side}")
@@ -149,28 +151,39 @@ def _pad_to_max_length(
     for current_segment_list in current_segments:
         if current_segment_list is not None and len([d["tokens"] for d in current_segment_list]) > 0:
             sequence = torch.cat([d["tokens"] for d in current_segment_list], dim=-1)
+            token_timestamps = torch.cat([d["token_timestamps"][: len(d["tokens"])] for d in current_segment_list], dim=-1)
 
             if cut_off_length is not None:
                 sequence = sequence[-cut_off_length:]
+                token_timestamps = token_timestamps[-cut_off_length:]
 
             if bos_token_tensor is not None:
                 sequence = torch.cat([bos_token_tensor, sequence])
-
+                token_timestamps = torch.cat([torch.ones_like(bos_token_tensor, device=device) * 0.0, token_timestamps])
             sequences.append(sequence)
+            token_timestamps_list.append(token_timestamps)
             max_total_length = max(max_total_length, len(sequences[-1]))
         elif bos_token_tensor is not None:
             sequences.append(bos_token_tensor)
+            token_timestamps_list.append(torch.ones_like(bos_token_tensor, device=device) * 0.0, device=device)
         else:
             sequences.append(torch.tensor([], device=device))
+            token_timestamps_list.append(torch.tensor([], device=device))
 
     max_total_length = cut_off_length + 1 if padding == "max_length" else max_total_length
     for i in range(len(current_segments)):
         pad_length = max_total_length - len(sequences[i])
         pad = (0, pad_length) if padding_side == "right" else (pad_length, 0)
+
         sequences[i] = F.pad(sequences[i], pad=pad, value=pad_token_id)
+        token_timestamps_list[i] = F.pad(token_timestamps_list[i], pad=pad, value=token_timestamps_list[i][-1])
 
     sequences = torch.stack(sequences, dim=0)
-    return sequences
+    token_timestamps = torch.stack(token_timestamps_list, dim=0)
+    if return_token_timestamps:
+        return sequences, token_timestamps
+    else:
+        return sequences
 
 
 class WhisperGenerationMixin(GenerationMixin):
@@ -779,9 +792,14 @@ class WhisperGenerationMixin(GenerationMixin):
             else current_segments
         )
 
-        sequences = _pad_to_max_length(
-            final_segments, generation_config.pad_token_id, device=self.device, padding_side="right"
-        )
+        if return_token_timestamps:
+            sequences, token_timestamps = _pad_to_max_length(
+                final_segments, generation_config.pad_token_id, device=self.device, padding_side="right", return_token_timestamps=return_token_timestamps
+            )
+        else:
+            sequences = _pad_to_max_length(
+                final_segments, generation_config.pad_token_id, device=self.device, padding_side="right"
+            )
 
         # 8. If we return all segments, the predicted output sequences are put under `"sequences"`.
         if not return_segments and not (return_dict_in_generate and generation_config.return_dict_in_generate):
@@ -814,13 +832,7 @@ class WhisperGenerationMixin(GenerationMixin):
                     )
 
         if return_token_timestamps:
-            outputs["token_timestamps"] = torch.stack(
-                [
-                    torch.cat([seg["token_timestamps"][:seg["tokens"].shape[0]] for seg in segments])
-                    for segments in final_segments
-                ],
-                dim=0,
-            )  
+            outputs["token_timestamps"] = token_timestamps
 
         return outputs
 
@@ -1082,7 +1094,12 @@ class WhisperGenerationMixin(GenerationMixin):
                         continue
 
                     if key not in concatenated_outputs:
-                        concatenated_outputs[key] = value[..., start_idx:end_idx] if key in tensor_keys else value[start_idx:end_idx]
+                        if key in tensor_keys:
+                            concatenated_outputs[key] = value[..., start_idx:end_idx] if key in tensor_keys else value[start_idx:end_idx]
+                        elif key in tuple_keys:
+                            concatenated_outputs[key] = value[start_idx:end_idx]
+                        else:
+                            concatenated_outputs[key] = value
                         continue
 
                     if key in unsupported_keys:
