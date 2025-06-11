@@ -4,20 +4,7 @@ This AGENTS.md file provides guidance for code agents working with this codebase
 
 ## Core Project Structure
 
-- `/src/transformers`: This contains the core source code for the library
-  - `/models`: Code for individual models. Models inherit from base classes in the root `/src/transformers` directory.
-- `/tests`: This contains the core test classes for the library. These are usually inherited rather than directly run.
-  - `/models`: Tests for individual models. Model tests inherit from common tests in the root `/tests` directory.
-- `/docs`: This contains the documentation for the library, including guides, tutorials, and API references.
-
-## Coding Conventions for Hugging Face Transformers
-
-- PRs should be as brief as possible. Bugfix PRs in particular can often be only one or two lines long, and do not need large comments, docstrings or new functions in this case. Aim to minimize the size of the diff.
-- When writing tests, they should be added to an existing file. The only exception is for PRs to add a new model, when a new test directory should be created for that model.
-- Code style is enforced in the CI. You can install the style tools with `pip install -e .[quality]`. You can then run `make fixup` to apply style and consistency fixes to your code.
-
-## Copying and inheritance
-
+- `/sr
 Many models in the codebase have similar code, but it is not shared by inheritance because we want each model file to be self-contained.
 We use two mechanisms to keep this code in sync:
 
