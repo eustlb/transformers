@@ -41,7 +41,7 @@ class HiFTNetPreTrainedModel(PreTrainedModel):
         pass
 
 
-#TODO: @eustlb, check if this naming convention is the best regarding Transformers
+# TODO: @eustlb, explain this is from cosyvoice/ chatterbox implems
 class HiFTNetFundamentalFrequencyPredictor(HiFTNetPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
@@ -67,12 +67,14 @@ class HiFTNetFundamentalFrequencyPredictor(HiFTNetPreTrainedModel):
         self.linear = nn.Linear(in_features=config.hidden_size, out_features=1)
 
     def forward(self, input_features: torch.Tensor, input_lengths=None) -> torch.Tensor:
+        # input_features: (batch_size, num_mel_bins, input_length)
+        # returns (batch_size, 1, input_length)
         hidden_states = self.condnet(input_features)
         hidden_states = self.linear(hidden_states.transpose(1, 2))
-        f0 = torch.abs(hidden_states.squeeze(-1))
+        fundamental_frequency = torch.abs(hidden_states.squeeze(-1))
         if input_lengths is not None:
-            f0 = _mask_hidden_states(f0, input_lengths)
-        return f0
+            fundamental_frequency = _mask_hidden_states(fundamental_frequency, input_lengths)
+        return fundamental_frequency
 
 
 class HiFTNetHarmonicNoiseSourceFilter(nn.Module):
@@ -86,7 +88,7 @@ class HiFTNetHarmonicNoiseSourceFilter(nn.Module):
         self,
         sampling_rate,
         upsample_scale,
-        harmonic_num=0,
+        num_harmonic=0,
         sine_amplitude=0.1,
         add_noise_std=0.003,
         voiced_threshold=0,
@@ -97,7 +99,7 @@ class HiFTNetHarmonicNoiseSourceFilter(nn.Module):
                 Sampling rate in Hz.
             upsample_scale: (`int`):
                 Upsampling scale.
-            harmonic_num: (`int`, *optional*, defaults to 0):
+            num_harmonic: (`int`, *optional*, defaults to 0):
                 Number of harmonic overtones.
             sine_amplitude: (`float`, *optional*, defaults to 0.1):
                 Amplitude of sine-waveform.
@@ -109,19 +111,19 @@ class HiFTNetHarmonicNoiseSourceFilter(nn.Module):
         super().__init__()
         self.sampling_rate = sampling_rate
         self.upsample_scale = upsample_scale
-        self.harmonic_num = harmonic_num
+        self.num_harmonic = num_harmonic
         self.sine_amplitude = sine_amplitude
         self.add_noise_std = add_noise_std
         self.voiced_threshold = voiced_threshold
         self.upsample = nn.Upsample(scale_factor=upsample_scale)
 
         # to merge source harmonics into a single excitation
-        self.linear = torch.nn.Linear(harmonic_num + 1, 1)
+        self.linear = torch.nn.Linear(num_harmonic + 1, 1)
 
     def forward(self, fundamental_frequency):
         # fundamental frequency: shape (batch_size, 1, sample_len)
 
-        fundamental_frequency = self.upsample(fundamental_frequency[:, None]).transpose(1, 2)  # bs,n,t
+        fundamental_frequency = self.upsample(fundamental_frequency.unsqueeze(1))
 
         with torch.no_grad():
             # ----------------------------
@@ -132,8 +134,7 @@ class HiFTNetHarmonicNoiseSourceFilter(nn.Module):
             harmonic_overtones = harmonic_overtones / self.sampling_rate % 1
 
             random_initialization = torch.rand(fundamental_frequency.shape[0], 1, self.num_harmonic + 1, device=fundamental_frequency.device)
-            random_initialization[:, 0, :] = 0
-            harmonic_overtones = harmonic_overtones + random_initialization
+            harmonic_overtones[..., 0] = harmonic_overtones[..., 0] + random_initialization
 
             harmonic_overtones = F.interpolate(
                 harmonic_overtones, scale_factor=1 / self.upsample_scale, mode="linear"
@@ -150,13 +151,15 @@ class HiFTNetHarmonicNoiseSourceFilter(nn.Module):
 
             # voiced/unvoiced segments by thresholding
             is_voiced = fundamental_frequency > self.voiced_threshold
-            noise_amp = is_voiced * self.noise_std + (1 - is_voiced) * self.sine_amplitude / 3
+            noise_amp = torch.where(is_voiced, self.add_noise_std, self.sine_amplitude / 3)
             noise = noise_amp * torch.randn_like(sines)
             # ----------------------------
 
             sines = sines * is_voiced + noise
 
-        return F.tanh(self.linear(sines))
+        sines_merged = self.linear(sines.transpose(1, 2)).squeeze(-1)
+
+        return F.tanh(sines_merged)
 
 
 class Snake(nn.Module):
@@ -166,9 +169,10 @@ class Snake(nn.Module):
     """
     def __init__(self, channels):
         super().__init__()
-        self.alpha = nn.Parameter(torch.ones(channels))
+        self.alpha = nn.Parameter(torch.ones(channels, 1))
     
     def forward(self, hidden_states):
+        # expects inputs in (bs, channel, seq_len)
         return hidden_states + 1 / self.alpha * torch.sin(self.alpha * hidden_states) ** 2
 
 
@@ -193,12 +197,11 @@ class HiFTNetResidualBlockLayer(nn.Module):
 
     def forward(self, hidden_states, input_lengths):
         residual = self.snake_activation_1(hidden_states)
-        residual = self.conv1(residual.transpose(1, 2)).transpose(1, 2)
-
+        residual = self.conv1(residual)
         residual = _mask_hidden_states(residual, input_lengths)
 
         residual = self.snake_activation_2(residual)
-        residual = self.conv2(residual.transpose(1, 2)).transpose(1, 2)
+        residual = self.conv2(residual)
         residual = _mask_hidden_states(residual, input_lengths)
 
         return residual + hidden_states
@@ -223,7 +226,7 @@ class MultiReceptiveFieldFusion(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.resblocks = nn.ModuleList(
-            [HiFTNetResidualBlock(config.hidden_size, kernel_size, dilation) for kernel_size, dilation in zip(config.resblock_kernel_sizes, config.resblock_dilation_sizes)]
+            [HiFTNetResidualBlock(config.hidden_size, kernel_size, dilation) for kernel_size, dilation in zip(config.multi_receptive_field_fusion_kernel_sizes, config.multi_receptive_field_fusion_dilation_sizes)]
         )
     
     def forward(self, hidden_states, hidden_states_lengths):
@@ -233,43 +236,36 @@ class MultiReceptiveFieldFusion(nn.Module):
 class HiFTNetGeneratorLayer(nn.Module):
     def __init__(self, config, layer_idx, reflection_pad=False):
         super().__init__()
-        self.layer_idx = layer_idx
 
-        c_cur = config.upsample_initial_channel // (2 ** (layer_idx + 1))
-        if layer_idx + 1 < len(config.upsample_rates):
-            noise_conv_stride = math.prod(config.upsample_rates[layer_idx + 1 :])
-            noise_conv_padding = (noise_conv_stride + 1) // 2
-            noise_conv_kernel_size = noise_conv_stride * 2
-            noise_res_kernel_size = 7
-        else:
-            noise_conv_stride = 1
-            noise_conv_padding = 0
-            noise_conv_kernel_size = 1
-            noise_res_kernel_size = 11
+        in_channels = config.hidden_size // (2 ** layer_idx)
+        out_channels = config.hidden_size // (2 ** (layer_idx + 1))
 
         self.up = nn.ConvTranspose1d(
-            config.upsample_initial_channel // (2**layer_idx),
-            c_cur,
-            config.upsample_kernel_sizes[layer_idx],
-            config.upsample_rates[layer_idx],
+            in_channels,
+            out_channels,
+            kernel_size=config.upsample_kernel_sizes[layer_idx],
+            stride=config.upsample_rates[layer_idx],
             padding=(config.upsample_kernel_sizes[layer_idx] - config.upsample_rates[layer_idx]) // 2,
         )
 
-
         self.nsf_conv = nn.Conv1d(
             config.n_fft + 2,
-            c_cur,
-            kernel_size=noise_conv_kernel_size,
-            stride=noise_conv_stride,
-            padding=noise_conv_padding,
+            out_channels,
+            kernel_size=config.nsf_kernel_sizes[layer_idx],
+            stride=config.nsf_strides[layer_idx],
+            padding=config.nsf_padding[layer_idx],
+        )
+ 
+        self.nsf_res = HiFTNetResidualBlock(
+            out_channels,
+            config.nsf_residual_block_kernel_sizes[layer_idx],
+            (1, 3, 5)
         )
 
-        self.nsf_res = HiFTNetResidualBlock(c_cur, noise_res_kernel_size, (1, 3, 5))
-
-        self.multi_receptive_field_fusion = nn.ModuleList(
+        self.multi_receptive_field_fusion_blocks = nn.ModuleList(
             [
-                HiFTNetResidualBlock(c_cur, kernel_size, dilation)
-                for kernel_size, dilation in zip(config.resblock_kernel_sizes, config.resblock_dilation_sizes)
+                HiFTNetResidualBlock(out_channels, kernel_size, dilation)
+                for kernel_size, dilation in zip(config.mrf_kernel_sizes, config.mrf_dilation_sizes)
             ]
         )
 
@@ -299,7 +295,7 @@ class HiFTNetGeneratorLayer(nn.Module):
 
         # -------------------------
         # Noise Source Filter (NSF) block
-        hidden_states_source = self.nsf_conv(hidden_states_source.transpose(1, 2)).transpose(1, 2)
+        hidden_states_source = self.nsf_conv(hidden_states_source)
         source_lengths = self._nsf_conv_out_length(source_lengths)
         hidden_states_source = _mask_hidden_states(hidden_states_source, source_lengths)
         hidden_states_source = self.nsf_res(hidden_states_source, source_lengths)
@@ -307,11 +303,10 @@ class HiFTNetGeneratorLayer(nn.Module):
 
         # -------------------------
         # ConvTranspose upsampling
-        hidden_states = self.up(hidden_states.transpose(1, 2))
+        hidden_states = self.up(hidden_states)
         hidden_states_lengths = self._upsample_out_length(input_lengths)
-        hidden_states = _mask_hidden_states(hidden_states.transpose(1, 2), hidden_states_lengths)
-        hidden_states = hidden_states.transpose(1, 2)
-        hidden_states = self.reflection_pad(hidden_states).transpose(1, 2)
+        hidden_states = _mask_hidden_states(hidden_states, hidden_states_lengths)
+        hidden_states = self.reflection_pad(hidden_states)
         hidden_states_lengths = self._reflection_pad_out_length(hidden_states_lengths)
         # -------------------------
 
@@ -323,8 +318,8 @@ class HiFTNetGeneratorLayer(nn.Module):
         # -------------------------
         # multi-receptive field fusion (MRF) with snake activation
         # note: cuda api is async, resblock results are computed in parallel
-        hidden_states = sum(resblock(hidden_states, hidden_states_lengths) for resblock in self.resblocks) / len(
-            self.resblocks
+        hidden_states = sum(resblock(hidden_states, hidden_states_lengths) for resblock in self.multi_receptive_field_fusion_blocks) / len(
+            self.multi_receptive_field_fusion_blocks
         )
         # -------------------------
 
@@ -375,16 +370,13 @@ class HiFTNetGeneratorLayer(nn.Module):
 class HiFTNetModel(HiFTNetPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
-        self.n_fft = config.n_fft
-        self.hop_length = config.hop_size
-        self.win_length = config.n_fft
-        self.scale_factor = math.prod(config.upsample_rates) * config.hop_size
+        self.scale_factor = math.prod(config.upsample_rates) * config.hop_length
 
         self.source_generator = HiFTNetHarmonicNoiseSourceFilter(
-            sampling_rate=config.sampling_rate, upsample_scale=self.scale_factor, harmonic_num=8, voiced_threshold=10
+            sampling_rate=config.sampling_rate, upsample_scale=self.scale_factor, num_harmonic=8, voiced_threshold=10
         )
 
-        self.input_conv = nn.Conv1d(80, config.upsample_initial_channel, 7, 1, padding=3)
+        self.input_conv = nn.Conv1d(config.num_mel_bins, config.hidden_size, 7, 1, padding=3)
 
         self.layers = nn.ModuleList(
             [
@@ -396,7 +388,7 @@ class HiFTNetModel(HiFTNetPreTrainedModel):
         )
 
         self.output_conv = nn.Conv1d(
-            config.upsample_initial_channel // (2 ** (len(config.upsample_rates))),
+            config.hidden_size // (2 ** (len(config.upsample_rates))),
             config.n_fft + 2,
             7,
             padding=3,
@@ -422,14 +414,12 @@ class HiFTNetModel(HiFTNetPreTrainedModel):
 
             source_lengths = [l * self.scale_factor for l in input_lengths] if input_lengths is not None else None
             source = _mask_hidden_states(source, source_lengths)
-            source = source.transpose(1, 2).squeeze(1)
 
             source_spectrogram = torch.stft(
                 source,
-                self.n_fft,
-                self.hop_length,
-                self.win_length,
-                self.window,
+                n_fft=self.config.n_fft,
+                hop_length=self.config.hop_length,
+                window=self.window,
                 return_complex=True,
             )
 
@@ -440,7 +430,7 @@ class HiFTNetModel(HiFTNetPreTrainedModel):
             source_spectrogram = source_spectrogram.transpose(1, 2)
 
             source_magnitude, source_phase = source_spectrogram.abs(), source_spectrogram.angle()
-            source = torch.cat([source_magnitude, source_phase], dim=1).transpose(1, 2)
+            source = torch.cat([source_magnitude, source_phase], dim=1)
 
         # 2. input conv
         hidden_states = self.input_conv(input_features)
@@ -451,14 +441,14 @@ class HiFTNetModel(HiFTNetPreTrainedModel):
 
         # 4. output conv
         hidden_states = F.leaky_relu(hidden_states)
-        hidden_states = self.output_conv(hidden_states.transpose(1, 2))
-        hidden_states = _mask_hidden_states(hidden_states.transpose(1, 2), source_spectrogram_lengths)
-        hidden_states = hidden_states.transpose(1, 2)
+        hidden_states = self.output_conv(hidden_states)
+        hidden_states = _mask_hidden_states(hidden_states, source_spectrogram_lengths)
 
-        magnitude = torch.exp(hidden_states[:, : self.n_fft // 2 + 1, :])
-        phase = torch.sin(hidden_states[:, self.n_fft // 2 + 1 :, :])
+        magnitude = torch.exp(hidden_states[:, : self.config.n_fft // 2 + 1, :])
+        phase = torch.sin(hidden_states[:, self.config.n_fft // 2 + 1 :, :])
+        lengths = source_lengths
 
-        return magnitude, phase, source_lengths
+        return magnitude, phase, lengths
 
 
 class HiFTNetVocoder(HiFTNetPreTrainedModel):
@@ -466,11 +456,6 @@ class HiFTNetVocoder(HiFTNetPreTrainedModel):
         super().__init__(config)
         self.fundamental_frequency_predictor = HiFTNetFundamentalFrequencyPredictor(config)
         self.model = HiFTNetModel(config)
-        self.window = torch.hann_window(config.n_fft)
-
-        # TODO: @eustlb, a bit strange diff naming convention
-        self.win_length = config.n_fft
-        self.hop_length = config.hop_size
 
     def forward(self, input_features, input_lengths=None):
         # 1. fundamental frequency from mel spectrogram
@@ -483,10 +468,9 @@ class HiFTNetVocoder(HiFTNetPreTrainedModel):
         # 3. retreive waveform using inverse fourier transform
         waveform = torch.istft(
             magnitude * torch.exp(phase * 1j),
-            self.n_fft,
-            self.hop_length,
-            self.win_length,
-            window=self.window.to(magnitude.device),
+            self.config.n_fft,
+            self.config.hop_length,
+            window=self.model.window,
         )
 
         if source_lengths is not None:
