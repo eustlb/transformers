@@ -49,8 +49,8 @@ import yaml
 from transformers.models.fastconformer.configuration_fastconformer import FastConformerConfig
 from transformers.models.fastconformer.feature_extraction_fastconformer import FastConformerFeatureExtractor
 from transformers.models.fastconformer.modeling_fastconformer import FastConformerModel
-from transformers.models.parakeet_ctc.configuration_parakeet_ctc import ParakeetCTCConfig
-from transformers.models.parakeet_ctc.modeling_parakeet_ctc import ParakeetCTC
+from transformers.models.parakeet.configuration_parakeet import ParakeetCTCConfig
+from transformers.models.parakeet.modeling_parakeet import ParakeetCTC
 
 
 # Set up logging
@@ -721,7 +721,7 @@ def convert_nemo_to_hf(input_path: str, output_dir: str) -> dict[str, Any]:
             json.dump(vocab_dict, f, ensure_ascii=False, indent=2)
 
         # Import and create tokenizer
-        from transformers.models.parakeet_ctc.tokenization_parakeet_ctc import ParakeetCTCTokenizer
+        from transformers.models.parakeet.tokenization_parakeet_ctc import ParakeetCTCTokenizer
 
         # Get blank token ID from model config
         blank_token_id = len(vocab_dict)  # Default: vocab_size (blank token after all real tokens)

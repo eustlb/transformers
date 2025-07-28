@@ -24,7 +24,7 @@ from ...modeling_outputs import CausalLMOutput
 from ...modeling_utils import PreTrainedModel
 from ...utils.generic import can_return_tuple
 from ..fastconformer import FastConformerEncoder
-from .configuration_parakeet_ctc import ParakeetCTCConfig
+from .configuration_parakeet import ParakeetCTCConfig
 
 
 def calc_length(lengths, all_paddings, kernel_size, stride, ceil_mode, repeat_num=1):
