@@ -14,13 +14,12 @@
 # limitations under the License.
 from ...configuration_utils import PretrainedConfig
 from ...utils import logging
-from ..fastconformer.configuration_fastconformer import FastConformerConfig
 
 
 logger = logging.get_logger(__name__)
 
 
-class ParakeetFastConformerConfig(PretrainedConfig):
+class ParakeetFastConformerEncoderConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`FastConformerModel`]. It is used to instantiate a
     FastConformer model according to the specified arguments, defining the model architecture.
@@ -29,9 +28,6 @@ class ParakeetFastConformerConfig(PretrainedConfig):
     documentation from [`PretrainedConfig`] for more information.
 
     Args:
-        vocab_size (`int`, *optional*, defaults to 1024):
-            Vocabulary size of the FastConformer model. Note: This parameter is not used in the FastConformer
-            audio encoder but is required for HuggingFace framework compatibility.
         hidden_size (`int`, *optional*, defaults to 1024):
             Dimension of the layers and the hidden states.
         num_hidden_layers (`int`, *optional*, defaults to 24):
@@ -104,87 +100,61 @@ class ParakeetFastConformerConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size=1024,
         hidden_size=1024,
         num_hidden_layers=24,
         num_attention_heads=8,
+        num_key_value_heads=None,
         intermediate_size=4096,
         hidden_act="silu",
-        hidden_dropout_prob=0.1,
-        attention_probs_dropout_prob=0.1,
-        initializer_range=0.02,
         conv_kernel_size=9,
         subsampling_factor=8,
         subsampling_conv_channels=256,
-        num_mel_bins=128,
-        xscaling=False,
-        dropout_emb=0.0,
-        encoder_layerdrop=0.1,
+        num_mel_bins=80,
+        subsampling_conv_kernel_size=3,
+        subsampling_conv_stride=2,
+        dropout=0.1,
+        dropout_positions=0.0,
+        layerdrop=0.1,
         activation_dropout=0.1,
-        use_bias=False,
-        pad_token_id=0,
-        bos_token_id=1,
-        eos_token_id=2,
-        tie_word_embeddings=False,
-        use_cache=False,
-        output_attentions=False,
-        output_hidden_states=False,
+        attention_dropout=0.1,
+        max_position_embeddings=5000,
+        use_bias=True,
+        scale_input=True,
+        initializer_range=0.02,
         **kwargs,
     ):
         super().__init__(
-            pad_token_id=pad_token_id,
-            bos_token_id=bos_token_id,
-            eos_token_id=eos_token_id,
-            tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
-
-        # Core architecture parameters
-        self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
         self.intermediate_size = intermediate_size
         self.hidden_act = hidden_act
-        self.initializer_range = initializer_range
 
-        # Dropout parameters
-        self.hidden_dropout_prob = hidden_dropout_prob
-        self.attention_probs_dropout_prob = attention_probs_dropout_prob
-        self.activation_dropout = activation_dropout
-        self.dropout_emb = dropout_emb
-        self.encoder_layerdrop = encoder_layerdrop
-
-        # for backward compatibility
-        num_key_value_heads = None
-        if num_key_value_heads is None:
-            num_key_value_heads = num_attention_heads
-
-        self.attention_bias = False
-
-        self.num_key_value_heads = num_key_value_heads
-
-        # FastConformer-specific parameters
+        if (conv_kernel_size - 1) % 2 != 0:
+            raise ValueError(f"conv_kernel_size must be odd, got {conv_kernel_size}")
         self.conv_kernel_size = conv_kernel_size
+
+        self.subsampling_conv_kernel_size = subsampling_conv_kernel_size
+        self.subsampling_conv_stride = subsampling_conv_stride
+
         self.subsampling_factor = subsampling_factor
         self.subsampling_conv_channels = subsampling_conv_channels
         self.num_mel_bins = num_mel_bins
-        self.xscaling = xscaling
+
+        self.dropout = dropout
+        self.dropout_positions = dropout_positions
+        self.layerdrop = layerdrop
+        self.activation_dropout = activation_dropout
+        self.attention_dropout = attention_dropout
+        self.max_position_embeddings = max_position_embeddings
+
         self.use_bias = use_bias
+        self.scale_input = scale_input
+        self.initializer_range = initializer_range
 
-        # Output control
-        self.use_cache = use_cache
-        self.output_attentions = output_attentions
-        self.output_hidden_states = output_hidden_states
-
-        # For compatibility with existing code
-        self.d_model = hidden_size
-        self.encoder_layers = num_hidden_layers
-        self.encoder_attention_heads = num_attention_heads
-        self.encoder_ffn_dim = intermediate_size
-        self.dropout = hidden_dropout_prob
-        self.attention_dropout = attention_probs_dropout_prob
-        self.activation_function = hidden_act
+        self.use_bias = True
 
 
 class ParakeetConfig(PretrainedConfig):
@@ -234,13 +204,13 @@ class ParakeetConfig(PretrainedConfig):
     model_type = "parakeet_ctc"
     keys_to_ignore_at_inference = ["past_key_values"]
     sub_configs = {
-        "encoder_config": ParakeetFastConformerConfig,
+        "encoder_config": ParakeetFastConformerEncoderConfig,
     }
 
     def __init__(
         self,
-        vocab_size=1024,
-        blank_token_id=0,
+        vocab_size=1025,
+        blank_token_id=1024,
         pad_token_id=0,
         bos_token_id=1,
         eos_token_id=2,
@@ -262,18 +232,22 @@ class ParakeetConfig(PretrainedConfig):
         self.ctc_loss_reduction = ctc_loss_reduction
         self.ctc_zero_infinity = ctc_zero_infinity
 
+        self.use_bias = True
+
         # FastConformer encoder configuration
         if encoder_config is None:
-            self.encoder_config = FastConformerConfig()
+            self.encoder_config = ParakeetFastConformerEncoderConfig()
             logger.info("encoder_config is None, using default FastConformer config.")
         elif isinstance(encoder_config, dict):
-            self.encoder_config = FastConformerConfig(**encoder_config)
-        elif isinstance(encoder_config, FastConformerConfig):
+            self.encoder_config = ParakeetFastConformerEncoderConfig(**encoder_config)
+        elif isinstance(encoder_config, ParakeetFastConformerEncoderConfig):
             self.encoder_config = encoder_config
         else:
             raise ValueError(
                 f"encoder_config must be a dict, FastConformerConfig, or None, got {type(encoder_config)}"
             )
+
+        self.initializer_range = self.encoder_config.initializer_range
 
 
 __all__ = ["ParakeetConfig"]
