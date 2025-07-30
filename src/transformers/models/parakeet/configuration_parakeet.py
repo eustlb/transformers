@@ -19,7 +19,7 @@ from ...utils import logging
 logger = logging.get_logger(__name__)
 
 
-class ParakeetFastConformerEncoderConfig(PretrainedConfig):
+class ParakeetEncoderConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`FastConformerModel`]. It is used to instantiate a
     FastConformer model according to the specified arguments, defining the model architecture.
@@ -103,7 +103,6 @@ class ParakeetFastConformerEncoderConfig(PretrainedConfig):
         hidden_size=1024,
         num_hidden_layers=24,
         num_attention_heads=8,
-        num_key_value_heads=None,
         intermediate_size=4096,
         hidden_act="silu",
         conv_kernel_size=9,
@@ -201,11 +200,9 @@ class ParakeetConfig(PretrainedConfig):
     and pre-trained models at [nvidia/parakeet-ctc-1.1b](https://huggingface.co/nvidia/parakeet-ctc-1.1b).
     """
 
-    model_type = "parakeet_ctc"
+    model_type = "parakeet"
     keys_to_ignore_at_inference = ["past_key_values"]
-    sub_configs = {
-        "encoder_config": ParakeetFastConformerEncoderConfig,
-    }
+    sub_configs = {"encoder_config": ParakeetEncoderConfig}
 
     def __init__(
         self,
@@ -225,29 +222,29 @@ class ParakeetConfig(PretrainedConfig):
             eos_token_id=eos_token_id,
             **kwargs,
         )
-
-        # CTC-specific parameters
+        if encoder_config is None:
+            encoder_config = {}
+            logger.info("`encoder_config` is `None`. Initializing the `ParakeetEncoderConfig` with default values.")
+        
+        self.encoder_config = ParakeetEncoderConfig(**encoder_config)
         self.vocab_size = vocab_size
         self.blank_token_id = blank_token_id
         self.ctc_loss_reduction = ctc_loss_reduction
         self.ctc_zero_infinity = ctc_zero_infinity
-
+        # TODO: @eustlb
         self.use_bias = True
-
-        # FastConformer encoder configuration
-        if encoder_config is None:
-            self.encoder_config = ParakeetFastConformerEncoderConfig()
-            logger.info("encoder_config is None, using default FastConformer config.")
-        elif isinstance(encoder_config, dict):
-            self.encoder_config = ParakeetFastConformerEncoderConfig(**encoder_config)
-        elif isinstance(encoder_config, ParakeetFastConformerEncoderConfig):
-            self.encoder_config = encoder_config
-        else:
-            raise ValueError(
-                f"encoder_config must be a dict, FastConformerConfig, or None, got {type(encoder_config)}"
-            )
-
         self.initializer_range = self.encoder_config.initializer_range
 
+    @classmethod
+    def from_encoder_config(cls, encoder_config: ParakeetEncoderConfig, **kwargs):
+        r"""
+        Instantiate a [`ParakeetConfig`] (or a derived class) from parakeet encoder model configuration.
 
-__all__ = ["ParakeetConfig"]
+        Returns:
+            [`ParakeetConfig`]: An instance of a configuration object
+        """
+
+        return cls(encoder_config=encoder_config.to_dict(), **kwargs)
+
+
+__all__ = ["ParakeetConfig", "ParakeetEncoderConfig"]

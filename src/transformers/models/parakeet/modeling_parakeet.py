@@ -27,13 +27,13 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, can_return_tuple
 from ...utils.generic import check_model_inputs
-from .configuration_parakeet import ParakeetConfig, ParakeetFastConformerEncoderConfig
+from .configuration_parakeet import ParakeetConfig, ParakeetEncoderConfig
 
 
-class ParakeetFastConformerEncoderRelPositionalEncoding(nn.Module):
+class ParakeetEncoderRelPositionalEncoding(nn.Module):
     """Relative positional encoding for FastConformer."""
 
-    def __init__(self, config: ParakeetFastConformerEncoderConfig):
+    def __init__(self, config: ParakeetEncoderConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.max_position_embeddings = config.max_position_embeddings
@@ -73,8 +73,8 @@ class ParakeetFastConformerEncoderRelPositionalEncoding(nn.Module):
         return position_embeddings
 
 
-class ParakeetFastConformerEncoderFeedForward(nn.Module):
-    def __init__(self, config: ParakeetFastConformerEncoderConfig):
+class ParakeetEncoderFeedForward(nn.Module):
+    def __init__(self, config: ParakeetEncoderConfig):
         super().__init__()
         self.linear1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=config.use_bias)
         self.activation = ACT2FN[config.hidden_act]
@@ -88,8 +88,8 @@ class ParakeetFastConformerEncoderFeedForward(nn.Module):
         return hidden_states
 
 
-class ParakeetFastConformerEncoderConvModule(nn.Module):
-    def __init__(self, config: ParakeetFastConformerEncoderConfig):
+class ParakeetEncoderConvModule(nn.Module):
+    def __init__(self, config: ParakeetEncoderConfig):
         super().__init__()
         self.padding = (config.conv_kernel_size - 1) // 2
 
@@ -148,10 +148,10 @@ def eager_attention_forward(
     return attn_output, attn_weights
 
 
-class ParakeetFastConformerEncoderAttention(nn.Module):
+class ParakeetEncoderAttention(nn.Module):
     """Multi-head attention with relative positional encoding. See section 3.3 of https://huggingface.co/papers/1901.02860."""
 
-    def __init__(self, config: ParakeetFastConformerEncoderConfig, layer_idx: int):
+    def __init__(self, config: ParakeetEncoderConfig, layer_idx: int):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -235,8 +235,8 @@ class ParakeetFastConformerEncoderAttention(nn.Module):
         return attention_scores
 
 
-class ParakeetFastConformerEncoderSubsamplingConv2D(nn.Module):
-    def __init__(self, config: ParakeetFastConformerEncoderConfig, num_mel_bins: int):
+class ParakeetEncoderSubsamplingConv2D(nn.Module):
+    def __init__(self, config: ParakeetEncoderConfig, num_mel_bins: int):
         super().__init__()
 
         self.kernel_size = config.subsampling_conv_kernel_size
@@ -277,15 +277,15 @@ class ParakeetFastConformerEncoderSubsamplingConv2D(nn.Module):
         return hidden_states
 
 
-class ParakeetFastConformerEncoderBlock(GradientCheckpointingLayer):
-    def __init__(self, config: ParakeetFastConformerEncoderConfig, layer_idx: Optional[int] = None):
+class ParakeetEncoderBlock(GradientCheckpointingLayer):
+    def __init__(self, config: ParakeetEncoderConfig, layer_idx: Optional[int] = None):
         super().__init__()
         self.gradient_checkpointing = False
 
-        self.feed_forward1 = ParakeetFastConformerEncoderFeedForward(config)
-        self.self_attn = ParakeetFastConformerEncoderAttention(config, layer_idx)
-        self.conv = ParakeetFastConformerEncoderConvModule(config)
-        self.feed_forward2 = ParakeetFastConformerEncoderFeedForward(config)
+        self.feed_forward1 = ParakeetEncoderFeedForward(config)
+        self.self_attn = ParakeetEncoderAttention(config, layer_idx)
+        self.conv = ParakeetEncoderConvModule(config)
+        self.feed_forward2 = ParakeetEncoderFeedForward(config)
 
         self.norm_feed_forward1 = nn.LayerNorm(config.hidden_size)
         self.norm_self_att = nn.LayerNorm(config.hidden_size)
@@ -329,7 +329,7 @@ class ParakeetPreTrainedModel(PreTrainedModel):
     base_model_prefix = "model"
     main_input_name = "input_features"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["ParakeetFastConformerEncoderBlock"]
+    _no_split_modules = ["ParakeetEncoderBlock"]
     _supports_flat_attention_mask = True
     _supports_sdpa = True
     _supports_flex_attn = True
@@ -338,8 +338,8 @@ class ParakeetPreTrainedModel(PreTrainedModel):
     _can_compile_fullgraph = True
     _supports_attention_backend = True
     _can_record_outputs = {
-        "hidden_states": ParakeetFastConformerEncoderBlock,
-        "attentions": ParakeetFastConformerEncoderAttention,
+        "hidden_states": ParakeetEncoderBlock,
+        "attentions": ParakeetEncoderAttention,
     }
 
     def _init_weights(self, module):
@@ -351,7 +351,7 @@ class ParakeetPreTrainedModel(PreTrainedModel):
             # 0.02 is the standard default value accross the library
             std = getattr(self.config.get_text_config(), "initializer_range", 0.02)
 
-        if isinstance(module, ParakeetFastConformerEncoderAttention):
+        if isinstance(module, ParakeetEncoderAttention):
             # Initialize positional bias parameters
             module.bias_u.data.normal_(mean=0.0, std=std)
             module.bias_v.data.normal_(mean=0.0, std=std)
@@ -374,8 +374,9 @@ class ParakeetPreTrainedModel(PreTrainedModel):
         return lengths.to(dtype=torch.int)
 
 
-class ParakeetFastConformerEncoder(ParakeetPreTrainedModel):
-    def __init__(self, config: ParakeetFastConformerEncoderConfig):
+# TODO: @eustlb very likely custom intro to add fast conformer encoder in auto docstring
+class ParakeetEncoder(ParakeetPreTrainedModel):
+    def __init__(self, config: ParakeetEncoderConfig):
         super().__init__(config)
         self.config = config
         self.gradient_checkpointing = False
@@ -385,12 +386,14 @@ class ParakeetFastConformerEncoder(ParakeetPreTrainedModel):
         self.layerdrop = config.layerdrop
 
         self.input_scale = math.sqrt(config.hidden_size) if config.scale_input else 1.0
-        self.subsampling = ParakeetFastConformerEncoderSubsamplingConv2D(config, config.num_mel_bins)
-        self.encode_positions = ParakeetFastConformerEncoderRelPositionalEncoding(config)
+        self.subsampling = ParakeetEncoderSubsamplingConv2D(config, config.num_mel_bins)
+        self.encode_positions = ParakeetEncoderRelPositionalEncoding(config)
 
         self.layers = nn.ModuleList(
-            [ParakeetFastConformerEncoderBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [ParakeetEncoderBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
+
+        self.post_init()
 
     @check_model_inputs
     @can_return_tuple
@@ -440,27 +443,10 @@ class ParakeetFastConformerEncoder(ParakeetPreTrainedModel):
 class ParakeetForCTC(ParakeetPreTrainedModel):
     def __init__(self, config: ParakeetConfig):
         super().__init__(config)
-        self.encoder = ParakeetFastConformerEncoder(config.encoder_config)
+        self.encoder = ParakeetEncoder(config.encoder_config)
         self.ctc_head = nn.Linear(config.encoder_config.hidden_size, config.vocab_size)
 
-        # Initialize weights and apply final processing
-        self.post_init()
-
-    def get_encoder(self):
-        """Get the encoder component."""
-        return self.encoder
-
-    def set_encoder(self, encoder):
-        """Set the encoder component."""
-        self.encoder = encoder
-
-    def get_decoder(self):
-        """Get the decoder component."""
-        return self.decoder
-
-    def set_decoder(self, decoder):
-        """Set the decoder component."""
-        self.decoder = decoder
+        self.post_init() 
 
     @can_return_tuple
     def forward(
@@ -515,4 +501,4 @@ class ParakeetForCTC(ParakeetPreTrainedModel):
         )
 
 
-__all__ = ["ParakeetForCTC", "ParakeetPreTrainedModel"]
+__all__ = ["ParakeetForCTC", "ParakeetEncoder", "ParakeetPreTrainedModel"]
