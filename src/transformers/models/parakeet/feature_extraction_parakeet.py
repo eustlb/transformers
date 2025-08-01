@@ -12,9 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-Feature extractor class for FastConformer
-"""
 
 import warnings
 from collections.abc import Sequence
@@ -39,7 +36,7 @@ EPSILON = 1e-5
 
 class ParakeetFeatureExtractor(SequenceFeatureExtractor):
     r"""
-    Constructs a FastConformer feature extractor that matches NeMo's preprocessing exactly.
+    Constructs a Parakeet feature extractor that matches NeMo's preprocessing exactly.
 
     This feature extractor inherits from [`~feature_extraction_sequence_utils.SequenceFeatureExtractor`] which contains
     most of the main methods. Users should refer to this superclass for more information regarding those methods.
@@ -129,11 +126,11 @@ class ParakeetFeatureExtractor(SequenceFeatureExtractor):
         """Get mel filterbanks, creating them if needed."""
         if self._filterbanks is None:
             if not is_torch_available():
-                raise ImportError("PyTorch is required for FastConformer feature extraction")
+                raise ImportError("PyTorch is required for Parakeet feature extraction")
 
             if not is_librosa_available():
                 raise ImportError(
-                    "librosa is required for FastConformer feature extraction. "
+                    "librosa is required for Parakeet feature extraction. "
                     "Please install it with `pip install librosa`."
                 )
 
@@ -366,11 +363,11 @@ class ParakeetFeatureExtractor(SequenceFeatureExtractor):
                 The device to use for computation and output tensors. If None, uses the same device as the input tensor.
         """
         if not is_torch_available():
-            raise ImportError("PyTorch is required for FastConformer feature extraction")
+            raise ImportError("PyTorch is required for Parakeet feature extraction")
 
         if not is_librosa_available():
             raise ImportError(
-                "librosa is required for FastConformer feature extraction. "
+                "librosa is required for Parakeet feature extraction. "
                 "Please install it with `pip install librosa`."
             )
 

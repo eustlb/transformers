@@ -37,7 +37,7 @@ from .configuration_parakeet import ParakeetConfig, ParakeetEncoderConfig
 
 
 class ParakeetEncoderRelPositionalEncoding(nn.Module):
-    """Relative positional encoding for FastConformer."""
+    """Relative positional encoding for Parakeet."""
 
     def __init__(self, config: ParakeetEncoderConfig):
         super().__init__()

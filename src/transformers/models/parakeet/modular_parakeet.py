@@ -37,7 +37,7 @@ class ParakeetProcessor(WhisperProcessor):
 
 
 class ParakeetEncoderRelPositionalEncoding(nn.Module):
-    """Relative positional encoding for FastConformer."""
+    """Relative positional encoding for Parakeet."""
 
     def __init__(self, config: ParakeetEncoderConfig):
         super().__init__()

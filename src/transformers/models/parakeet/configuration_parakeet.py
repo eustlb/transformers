@@ -21,8 +21,8 @@ logger = logging.get_logger(__name__)
 
 class ParakeetEncoderConfig(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a [`FastConformerModel`]. It is used to instantiate a
-    FastConformer model according to the specified arguments, defining the model architecture.
+    This is the configuration class to store the configuration of a [`ParakeetEncoder`]. It is used to instantiate a
+    ParakeetEncoder model according to the specified arguments, defining the model architecture.
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
@@ -71,7 +71,7 @@ class ParakeetEncoderConfig(PretrainedConfig):
         tie_word_embeddings (`bool`, *optional*, defaults to `False`):
             Whether to tie word embeddings.
         use_cache (`bool`, *optional*, defaults to `False`):
-            Whether to use cache. Not used in FastConformer but kept for compatibility.
+            Whether to use cache. Not used in ParakeetEncoder but kept for compatibility.
         output_attentions (`bool`, *optional*, defaults to `False`):
             Whether to output attention weights.
         output_hidden_states (`bool`, *optional*, defaults to `False`):
@@ -79,23 +79,23 @@ class ParakeetEncoderConfig(PretrainedConfig):
 
     Example:
         ```python
-        >>> from transformers import FastConformerModel, FastConformerConfig
+        >>> from transformers import ParakeetEncoderModel, ParakeetEncoderConfig
 
-        >>> # Initializing a FastConformer configuration
-        >>> configuration = FastConformerConfig()
+        >>> # Initializing a ParakeetEncoder configuration
+        >>> configuration = ParakeetEncoderConfig()
 
         >>> # Initializing a model from the configuration
-        >>> model = FastConformerModel(configuration)
+        >>> model = ParakeetEncoderModel(configuration)
 
         >>> # Accessing the model configuration
         >>> configuration = model.config
         ```
 
-    This configuration class is based on the FastConformer architecture from NVIDIA NeMo. You can find more details
+    This configuration class is based on the ParakeetEncoder architecture from NVIDIA NeMo. You can find more details
     and pre-trained models at [nvidia/parakeet-ctc-1.1b](https://huggingface.co/nvidia/parakeet-ctc-1.1b).
     """
 
-    model_type = "fastconformer"
+    model_type = "parakeet_encoder"
     keys_to_ignore_at_inference = ["past_key_values"]
 
     def __init__(
@@ -179,8 +179,8 @@ class ParakeetConfig(PretrainedConfig):
             The reduction method for CTC loss. Can be "mean", "sum", or "none".
         ctc_zero_infinity (`bool`, *optional*, defaults to `True`):
             Whether to set infinite losses to zero in CTC loss computation.
-        encoder_config (`FastConformerConfig`, *optional*):
-            Configuration for the FastConformer encoder.
+        encoder_config (`ParakeetEncoderConfig`, *optional*):
+            Configuration for the ParakeetEncoder encoder.
 
     Example:
         ```python
