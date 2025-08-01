@@ -29,7 +29,7 @@ logger = logging.get_logger(__name__)
 VOCAB_FILES_NAMES = {"vocab_file": "vocab.json"}
 
 
-class ParakeetCTCTokenizer(PreTrainedTokenizer):
+class ParakeetTokenizer(PreTrainedTokenizer):
     """
     Parakeet CTC tokenizer for CTC-based speech recognition models.
 
@@ -325,4 +325,4 @@ class ParakeetCTCTokenizer(PreTrainedTokenizer):
         return [0] * len(token_ids_0) + [0] * len(token_ids_1)
 
 
-__all__ = ["ParakeetCTCTokenizer"]
+__all__ = ["ParakeetTokenizer"]
