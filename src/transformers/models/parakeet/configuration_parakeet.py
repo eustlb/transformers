@@ -208,7 +208,7 @@ class ParakeetConfig(PretrainedConfig):
         self,
         vocab_size=1025,
         blank_token_id=1024,
-        pad_token_id=0,
+        pad_token_id=1024,
         bos_token_id=1,
         eos_token_id=2,
         ctc_loss_reduction="mean",
@@ -225,7 +225,7 @@ class ParakeetConfig(PretrainedConfig):
         if encoder_config is None:
             encoder_config = {}
             logger.info("`encoder_config` is `None`. Initializing the `ParakeetEncoderConfig` with default values.")
-        
+
         self.encoder_config = ParakeetEncoderConfig(**encoder_config)
         self.vocab_size = vocab_size
         self.blank_token_id = blank_token_id
