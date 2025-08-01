@@ -20,11 +20,10 @@ from transformers.testing_utils import cleanup, require_torch, slow, torch_devic
 
 from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import ModelTesterMixin, floats_tensor, random_attention_mask
-from ...test_pipeline_mixin import PipelineTesterMixin
 
 
 if is_datasets_available():
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 
 if is_torch_available():
     import torch
@@ -32,8 +31,8 @@ if is_torch_available():
     from transformers import (
         AutoProcessor,
         ParakeetConfig,
-        ParakeetEncoderConfig,
         ParakeetEncoder,
+        ParakeetEncoderConfig,
         ParakeetForCTC,
     )
 
@@ -104,7 +103,7 @@ class ParakeetEncoderModelTester:
             subsampling_conv_channels=self.subsampling_conv_channels,
             use_bias=self.use_bias,
             num_mel_bins=self.num_mel_bins,
-            scale_input=self.scale_input
+            scale_input=self.scale_input,
         )
 
     def create_and_check_model(self, config, input_features, attention_mask):
@@ -113,8 +112,10 @@ class ParakeetEncoderModelTester:
         model.eval()
         with torch.no_grad():
             result = model(input_features, attention_mask=attention_mask)
-        
-        self.parent.assertEqual(result.last_hidden_state.shape, (self.batch_size, self.output_seq_length, config.hidden_size))
+
+        self.parent.assertEqual(
+            result.last_hidden_state.shape, (self.batch_size, self.output_seq_length, config.hidden_size)
+        )
 
     def prepare_config_and_inputs_for_common(self):
         config, input_features, attention_mask = self.prepare_config_and_inputs()
@@ -143,7 +144,7 @@ class ParakeetEncoderModelTest(ModelTesterMixin, unittest.TestCase):
     def test_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_model(*config_and_inputs)
-    
+
     @unittest.skip(reason="ParakeetEncoder does not use inputs_embeds")
     def test_model_get_set_embeddings(self):
         pass
@@ -175,7 +176,7 @@ class ParakeetForCTCModelTester:
             vocab_size=self.vocab_size,
             blank_token_id=self.blank_token_id,
         )
-    
+
     def create_and_check_model(self, config, input_features, attention_mask):
         model = ParakeetForCTC(config=config)
         model.to(torch_device)
@@ -196,10 +197,14 @@ class ParakeetForCTCModelTester:
 @require_torch
 class ParakeetForCTCModelTest(ModelTesterMixin, unittest.TestCase):
     all_model_classes = (ParakeetForCTC,) if is_torch_available() else ()
-    pipeline_model_mapping = {
-        "feature-extraction": ParakeetEncoder,
-        "automatic-speech-recognition": ParakeetForCTC,
-    } if is_torch_available() else {}
+    pipeline_model_mapping = (
+        {
+            "feature-extraction": ParakeetEncoder,
+            "automatic-speech-recognition": ParakeetForCTC,
+        }
+        if is_torch_available()
+        else {}
+    )
 
     test_attention_outputs = False
     test_pruning = False
@@ -218,21 +223,75 @@ class ParakeetForCTCModelTest(ModelTesterMixin, unittest.TestCase):
     def test_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_model(*config_and_inputs)
-    
+
     @unittest.skip(reason="ParakeetEncoder does not use inputs_embeds")
     def test_model_get_set_embeddings(self):
         pass
 
 
-# @require_torch
-# class ParakeetForCTCIntegrationTest(unittest.TestCase):
-#     def setUp(self):
-#         self.checkpoint_name = "parakeet/parakeet-large-v2"
-#         self.dtype = torch.bfloat16
-#         self.processor = AutoProcessor.from_pretrained(self.checkpoint_name)
+@require_torch
+class ParakeetForCTCIntegrationTest(unittest.TestCase):
+    _dataset = None
 
-#     def tearDown(self):
-#         cleanup(torch_device, gc_collect=True)
+    def setUp(self):
+        # TODO: update with the correct checkpoint
+        self.checkpoint_name = "eustlb/parakeet-ctc-1.1b"
+        self.dtype = torch.bfloat16
+        self.processor = AutoProcessor.from_pretrained(self.checkpoint_name)
 
-#     @slow
-#     def test_inference(self):
+    def tearDown(self):
+        cleanup(torch_device, gc_collect=True)
+
+    @classmethod
+    def _load_dataset(cls):
+        # Lazy loading of the dataset. Because it is a class method, it will only be loaded once per pytest process.
+        if cls._dataset is None:
+            cls._dataset = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+            # using 16000 here for simplicity, should rather be processor.feature_extractor.sampling_rate
+            cls._dataset = cls._dataset.cast_column("audio", Audio(sampling_rate=16000))
+
+    def _load_datasamples(self, num_samples):
+        self._load_dataset()
+        ds = self._dataset
+        speech_samples = ds.sort("id")[:num_samples]["audio"]
+        return [x["array"] for x in speech_samples]
+
+    @slow
+    def test_1b_model_integration(self):
+        samples = self._load_datasamples(1)
+
+        model = ParakeetForCTC.from_pretrained(self.checkpoint_name, torch_dtype=self.dtype, device_map=torch_device)
+
+        inputs = self.processor(samples, sampling_rate=16000)
+        inputs.to(torch_device, dtype=self.dtype)
+
+        predicted_ids = model.generate(**inputs)
+        predicted_transcripts = self.processor.batch_decode(predicted_ids)
+
+        EXPECTED_TRANSCRIPTS = [
+            "mister quilter is the apostle of the middle classes and we are glad to welcome his gospel"
+        ]
+
+        self.assertListEqual(predicted_transcripts, EXPECTED_TRANSCRIPTS)
+
+    @slow
+    def test_1b_model_integration_batched(self):
+        samples = self._load_datasamples(5)
+
+        model = ParakeetForCTC.from_pretrained(self.checkpoint_name, torch_dtype=self.dtype, device_map=torch_device)
+
+        inputs = self.processor(samples, sampling_rate=16000)
+        inputs.to(torch_device, dtype=self.dtype)
+
+        predicted_ids = model.generate(**inputs)
+        predicted_transcripts = self.processor.batch_decode(predicted_ids)
+
+        EXPECTED_TRANSCRIPTS = [
+            "mr quilter is the apostle of the middle classes and we are glad to welcome his gospel",
+            "nor is mr quilter's manner less interesting than his matter",
+            "he tells us that at this festive season of the year with christmas and roast beef looming before us similes drawn from eating and its results occur most readily to the mind",
+            "he has grave doubts whether sir frederick leighton's work is really greek after all and can discover in it but little of rocky ithaca",
+            "linnell's pictures are a sort of up guards and adam paintings and mason's exquisite idylls are as national as a jingo poem mr burket foster's landscapes smile at one much in the same way that mr carker used to flash his teeth and mr john collier gives his sitter a cheerful slap on the back before he says like a shampooer in a<unk>urkish bath next man",
+        ]
+
+        self.assertListEqual(predicted_transcripts, EXPECTED_TRANSCRIPTS)
