@@ -721,7 +721,7 @@ def convert_nemo_to_hf(input_path: str, output_dir: str) -> dict[str, Any]:
             json.dump(vocab_dict, f, ensure_ascii=False, indent=2)
 
         # Import and create tokenizer
-        from transformers.models.parakeet.tokenization_parakeet_ctc import ParakeetCTCTokenizer
+        from transformers.models.parakeet.tokenization_parakeet_ctc import ParakeetTokenizer
 
         # Get blank token ID from model config
         blank_token_id = len(vocab_dict)  # Default: vocab_size (blank token after all real tokens)
@@ -730,7 +730,7 @@ def convert_nemo_to_hf(input_path: str, output_dir: str) -> dict[str, Any]:
             blank_token_id = hf_config.blank_token_id
             logger.info(f"Using blank_token_id from model config: {blank_token_id}")
 
-        tokenizer = ParakeetCTCTokenizer(
+        tokenizer = ParakeetTokenizer(
             vocab_file=str(vocab_file_path),
             unk_token="<unk>",
             blank_token_id=blank_token_id,

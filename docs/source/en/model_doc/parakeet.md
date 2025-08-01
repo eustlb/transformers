@@ -215,9 +215,9 @@ python src/transformers/models/parakeet_ctc/convert_nemo_to_parakeet_ctc.py \
 
 [[autodoc]] ParakeetCTCConfig 
 
-## ParakeetCTCTokenizer
+## ParakeetTokenizer
 
-[[autodoc]] ParakeetCTCTokenizer 
+[[autodoc]] ParakeetTokenizer 
 
 ## ParakeetCTCPreTrainedModel
 
