@@ -54,6 +54,7 @@ _import_structure = {
     "finegrained_fp8": ["FP8Linear", "replace_with_fp8_linear"],
     "fsdp": ["is_fsdp_enabled", "is_fsdp_managed_module"],
     "ggml": [
+        "GGUF_CONFIG_DEFAULTS_MAPPING",
         "GGUF_CONFIG_MAPPING",
         "GGUF_TOKENIZER_MAPPING",
         "_gguf_parse_value",
@@ -73,6 +74,7 @@ _import_structure = {
         "replace_kernel_forward_from_hub",
         "use_kernel_forward_from_hub",
         "use_kernel_func_from_hub",
+        "use_kernelized_func",
     ],
     "integration_utils": [
         "INTEGRATION_TO_CALLBACK",
@@ -200,6 +202,7 @@ if TYPE_CHECKING:
     from .finegrained_fp8 import FP8Linear, replace_with_fp8_linear
     from .fsdp import is_fsdp_enabled, is_fsdp_managed_module
     from .ggml import (
+        GGUF_CONFIG_DEFAULTS_MAPPING,
         GGUF_CONFIG_MAPPING,
         GGUF_TOKENIZER_MAPPING,
         _gguf_parse_value,
@@ -214,6 +217,7 @@ if TYPE_CHECKING:
         replace_kernel_forward_from_hub,
         use_kernel_forward_from_hub,
         use_kernel_func_from_hub,
+        use_kernelized_func,
     )
     from .integration_utils import (
         INTEGRATION_TO_CALLBACK,
