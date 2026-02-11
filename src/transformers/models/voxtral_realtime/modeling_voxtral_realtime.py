@@ -26,7 +26,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-
 from ... import initialization as init
 from ...activations import ACT2FN
 from ...cache_utils import Cache, DynamicCache, StaticCache
@@ -39,7 +38,7 @@ from ...modeling_outputs import BaseModelOutputWithPast, BaseModelOutputWithPool
 from ...modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import TransformersKwargs, auto_docstring, can_return_tuple
+from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, is_torchdynamo_compiling
 from ...utils.generic import check_model_inputs, maybe_autocast
 from ..auto import AutoModel, AutoModelForCausalLM
 from .configuration_voxtral_realtime import (
@@ -64,6 +63,10 @@ class Conv1dCacheLayer:
             device=hidden_states.device,
             dtype=hidden_states.dtype,
         )
+
+        if not is_torchdynamo_compiling():
+            torch._dynamo.mark_static_address(self.cache)
+
         self.is_initialized = True
 
     def update(self, hidden_states, conv_module=None):
@@ -80,15 +83,14 @@ class Conv1dCacheLayer:
             if shortfall > 0:
                 padding_states = torch.cat([self.cache[:, :, -shortfall:], hidden_states], dim=-1)
             else:
-                padding_states = hidden_states[:, :, -self.left_pad :].clone()
+                padding_states = hidden_states[:, :, -self.left_pad :]
         else:
             padding_states = torch.empty(
                 hidden_states.shape[0], self.in_channels, 0, dtype=hidden_states.dtype, device=hidden_states.device
             )
 
-        # update the cache
         current_cache = self.cache.clone()
-        self.cache = padding_states
+        self.cache.copy_(padding_states)
 
         return current_cache
 
@@ -1250,7 +1252,7 @@ class VoxtralRealtimeForConditionalGeneration(VoxtralRealtimePreTrainedModel, Ge
                 model_kwargs["encoder_past_key_values"] = self._get_encoder_cache(
                     cache_implementation=generation_config.cache_implementation,
                     batch_size=batch_size,
-                    max_cache_len=750,
+                    max_cache_len=752,
                 )
             else:
                 raise ValueError(f"TODO: {generation_config.cache_implementation}")
