@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import queue
+import asyncio
 from typing import Optional
 from ...utils import auto_docstring, is_mistral_common_available, is_soundfile_available, is_torch_available, logging
 from ...utils.import_utils import requires
@@ -101,16 +101,18 @@ class VoxtralRealtimeProcessor(ProcessorMixin):
     def audio_length_per_tok(self):
         return self.mistral_common_audio_config.audio_length_per_tok
 
-    def audio_chunk_num_samples(self, is_first_audio_chunk: bool = False) -> int:
-        if is_first_audio_chunk:
-            # it is actually num_left_pad_tokens + num_delay_tokens + 1
-            # but the call to `encode_transcription` will add the left pad tokens
-            num_prefill_tokens = self.num_delay_tokens + 1
-            num_prefill_mel_frames = num_prefill_tokens * self.audio_length_per_tok
-            num_prefill_audio = (num_prefill_mel_frames - 1) * self.feature_extractor.hop_length + self.feature_extractor.win_length // 2
+    @property
+    def first_audio_chunk_num_samples(self) -> int:
+        # it is actually num_left_pad_tokens + num_delay_tokens + 1
+        # but the call to `encode_transcription` will add the left pad tokens
+        num_prefill_tokens = self.num_delay_tokens + 1
+        num_prefill_mel_frames = num_prefill_tokens * self.audio_length_per_tok
+        num_prefill_audio = (num_prefill_mel_frames - 1) * self.feature_extractor.hop_length + self.feature_extractor.win_length // 2
 
-            return num_prefill_audio
+        return num_prefill_audio
     
+    @property
+    def audio_chunk_num_samples(self) -> int:
         return self.audio_length_per_tok * self.feature_extractor.hop_length + self.feature_extractor.win_length
     
     @property
@@ -122,12 +124,31 @@ class VoxtralRealtimeProcessor(ProcessorMixin):
 
     def __call__(
         self,
-        audio: AudioInput | None = None,
+        audio: AudioInput | asyncio.Queue | None = None,
         is_streaming: bool = False,
         is_first_audio_chunk: Optional[bool] = None,
+        device=None,
+        dtype=None,
         **kwargs: Unpack[VoxtralRealtimeProcessorKwargs],
     ):
+        """
+        Args:
+            audio: Raw audio input, or an `asyncio.Queue` for streaming. When a queue is passed,
+                the first element is popped (must already be available) and processed as the first
+                chunk, and `input_features` in the returned `BatchFeature` will be an async generator
+                that yields features for each subsequent chunk pushed to the queue. Push `None` to
+                signal end of stream. On `GeneratorExit` (early stop), the queue is drained to
+                unblock any waiting producers.
+            device: Device to place output tensors on (used only when `audio` is a queue).
+            dtype: Dtype for output feature tensors (used only when `audio` is a queue).
+        """
         output_kwargs = self._merge_kwargs(VoxtralRealtimeProcessorKwargs, **kwargs)
+
+        audio_queue = None
+        if isinstance(audio, asyncio.Queue):
+            audio_queue = audio
+            audio = audio_queue.get_nowait()
+            is_first_audio_chunk = True
 
         if is_streaming and is_first_audio_chunk is None:
             raise ValueError("In streaming mode (`is_streaming=True`), set `is_first_audio_chunk` to `True` or `False` to indicate whether this is the first audio chunk.")
@@ -162,10 +183,47 @@ class VoxtralRealtimeProcessor(ProcessorMixin):
             center=is_first_audio_chunk,
             **output_kwargs["audio_kwargs"],
         )
-        
-        encoding = {**text_encoding, **audio_encoding, "num_delay_tokens": self.num_delay_tokens}
 
         return_tensors = output_kwargs["text_kwargs"].pop("return_tensors", None)
+
+        if audio_queue is not None:
+            # Convert first chunk to tensors
+            first_features = BatchFeature(data=dict(audio_encoding), tensor_type=return_tensors).input_features
+            if device is not None or dtype is not None:
+                first_features = first_features.to(device=device, dtype=dtype)
+
+            fe = self.feature_extractor
+            ak = output_kwargs["audio_kwargs"]
+
+            async def input_features_generator():
+                yield first_features
+                try:
+                    while True:
+                        chunk = await audio_queue.get()
+                        if chunk is None:
+                            return
+                        enc = fe([chunk], center=False, **{**ak, "return_tensors": "pt"})
+                        features = enc.input_features
+                        if device is not None or dtype is not None:
+                            features = features.to(device=device, dtype=dtype)
+                        yield features
+                except GeneratorExit:
+                    # Generation stopped early (e.g. EOS reached). Drain the queue
+                    # so that any producer blocked on `put()` can finish.
+                    while not audio_queue.empty():
+                        try:
+                            audio_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+
+            text_batch = BatchFeature(data=dict(text_encoding), tensor_type=return_tensors)
+            if device is not None:
+                text_batch = text_batch.to(device=device)
+
+            encoding = {**text_batch, "input_features": input_features_generator(), "num_delay_tokens": self.num_delay_tokens}
+            return BatchFeature(data=encoding)
+
+        encoding = {**text_encoding, **audio_encoding, "num_delay_tokens": self.num_delay_tokens}
         return BatchFeature(data=encoding, tensor_type=return_tensors)
 
 
