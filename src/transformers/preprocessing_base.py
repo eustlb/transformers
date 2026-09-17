@@ -48,6 +48,8 @@ logger = logging.get_logger(__name__)
 
 PreprocessingMixinType = TypeVar("PreprocessingMixinType", bound="PreprocessingMixin")
 
+_UNSET = object()
+
 
 class BatchFeature(UserDict):
     r"""
@@ -285,11 +287,9 @@ class PreprocessingMixin(PushToHubMixin):
     _file_type_label: str
 
     # --- Optional overrides ---
-    # Names within `valid_kwargs` that `__call__` accepts. `None` means "every valid kwarg", which is what
-    # image and video processors use. Audio processors narrow it: `valid_kwargs` is the *config* surface
-    # (materialised onto the instance, serialised by `to_dict`), and only an explicit subset of it is a
-    # per-call knob. Passing a config-only name to `__call__` raises instead of being silently dropped.
-    # See docs/adr/0007-per-call-kwargs-allowlist.md.
+    # Names within `valid_kwargs` that `__call__` accepts. `None` means every valid kwarg,
+    # which is what image and video processors use. A modality may narrow this set when some
+    # options configure the instance but cannot be changed for one call.
     per_call_kwargs: set[str] | None = None
 
     _excluded_dict_keys: set[str] = set()
@@ -323,12 +323,13 @@ class PreprocessingMixin(PushToHubMixin):
         Initialize instance attributes from `valid_kwargs` annotations.
 
         For each key in `self.valid_kwargs.__annotations__`, pops it from `kwargs`
-        and sets it on the instance (or deep-copies the class default).
+        and sets it on the instance (or deep-copies the class default). An explicitly passed
+        `None` is preserved; only an absent key falls back to the class default.
         Also sets `self._valid_kwargs_names`.
         """
         for key in self.valid_kwargs.__annotations__:
-            kwarg = kwargs.pop(key, None)
-            if kwarg is not None:
+            kwarg = kwargs.pop(key, _UNSET)
+            if kwarg is not _UNSET:
                 setattr(self, key, kwarg)
             else:
                 setattr(self, key, deepcopy(getattr(self, key, None)))
@@ -367,12 +368,8 @@ class PreprocessingMixin(PushToHubMixin):
         defaults from `self`, standardize and validate them, then dispatch to the modality-specific
         `_preprocess_*_like_inputs` implementation via `_preprocess_like_inputs`.
         """
-        # Reject config-only kwargs: names that configure the processor but that no read site consults
-        # per call, so accepting them would silently drop the caller's value.
         call_kwargs_names = self._call_kwargs_names
-        config_only = [
-            name for name in kwargs if name in self._valid_kwargs_names and name not in call_kwargs_names
-        ]
+        config_only = [name for name in kwargs if name in self._valid_kwargs_names and name not in call_kwargs_names]
         if config_only:
             raise ValueError(
                 f"{', '.join(sorted(config_only))} configure{'s' if len(config_only) == 1 else ''} "
@@ -381,14 +378,19 @@ class PreprocessingMixin(PushToHubMixin):
                 f"Kwargs accepted per call: {', '.join(call_kwargs_names)}."
             )
 
-        # Set default kwargs from self
+        # At call time, `None` has the same meaning as omitting the option: use the configured
+        # instance value. This keeps explicit falsey values such as `False` and `0` intact.
         for kwarg_name in call_kwargs_names:
-            kwargs.setdefault(kwarg_name, getattr(self, kwarg_name, None))
+            if kwargs.get(kwarg_name) is None:
+                kwargs[kwarg_name] = getattr(self, kwarg_name, None)
 
         # Type- and value-validate the *merged* kwargs. Validating only what the caller passed would leave
         # the rest filled with `validate_typed_dict`'s internal sentinel, which any real `Annotated`
         # validator then rejects.
-        validate_typed_dict(self.valid_kwargs, {k: v for k, v in kwargs.items() if k in self._valid_kwargs_names})
+        validation_kwargs = {
+            key: self._serialize_value(key, value) for key, value in kwargs.items() if key in self._valid_kwargs_names
+        }
+        validate_typed_dict(self.valid_kwargs, validation_kwargs)
 
         # Update kwargs that need further processing before being validated
         kwargs = self._standardize_kwargs(**kwargs)
@@ -685,9 +687,7 @@ class PreprocessingMixin(PushToHubMixin):
         if is_local:
             logger.info(f"loading configuration file {resolved_config_file}")
         else:
-            logger.info(
-                f"loading configuration file {config_file} from cache at {resolved_config_file}"
-            )
+            logger.info(f"loading configuration file {config_file} from cache at {resolved_config_file}")
 
         return config_dict, kwargs
 
@@ -699,8 +699,8 @@ class PreprocessingMixin(PushToHubMixin):
             `dict[str, Any]`: Dictionary of all the attributes that make up this instance.
         """
         output = copy.deepcopy(self.__dict__)
-        output[self._type_key] = self.__class__.__name__
         output.pop("_valid_kwargs_names", None)
+        output[self._type_key] = self.__class__.__name__
         for key in self._excluded_dict_keys:
             if key in output:
                 del output[key]
