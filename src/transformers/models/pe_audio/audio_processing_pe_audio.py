@@ -20,9 +20,6 @@ class PeAudioAudioProcessorMixin:
     # checkpoint (e.g. facebook/pe-a-frame-large) declare 48000. A 16000 default made the
     # processor silently resample 48 kHz input down and emit a third of the expected samples.
     sampling_rate = 48000
-    # The legacy `PeAudioFeatureExtractor` declares feature_size=1 and always returns a channel
-    # axis, so `audio_values` is (batch, 1, samples) rather than (batch, samples).
-    add_channel_dim = True
 
 
 class PeAudioAudioProcessor(PeAudioAudioProcessorMixin, TorchAudioBackend):

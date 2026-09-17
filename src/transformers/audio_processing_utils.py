@@ -47,9 +47,7 @@ class BaseAudioProcessor(AudioProcessingMixin):
     # on top of `AudioKwargs` is config-only by default, because model hooks read `self.x` rather than the
     # merged kwarg — a model wanting a genuine per-call knob allowlists it *and* adds a read site (see
     # `Qwen3ASRAudioProcessor._postprocess_output`). See docs/adr/0007-per-call-kwargs-allowlist.md.
-    per_call_kwargs = set(AudioKwargs.__annotations__) - {"add_channel_dim"}
-
-    add_channel_dim: bool = False
+    per_call_kwargs = set(AudioKwargs.__annotations__)
     padding = True
     padding_side = "right"
     padding_value = 0.0
@@ -378,10 +376,7 @@ class BaseAudioProcessor(AudioProcessingMixin):
         return audio_el
 
     def _to_batch(self, audio):
-        batch = self._stack(audio)
-        if self.add_channel_dim:
-            batch = self._insert_channel_dim(batch)
-        return batch
+        return self._stack(audio)
 
     def _pad_single(self, audio, max_length: int) -> AudioInput:
         current_length = audio.shape[-1]

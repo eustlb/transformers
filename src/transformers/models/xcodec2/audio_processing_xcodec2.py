@@ -34,7 +34,6 @@ class Xcodec2AudioProcessorKwargs(AudioKwargs, total=False):
 
 
 class Xcodec2AudioProcessorMixin:
-    add_channel_dim = True
     do_extract_spectrogram = False
     # Mel frames are padded with 1.0 (the legacy FE's `padding_value`), unlike the raw audio
     # Legacy hub configs describe the fbank geometry with flat keys that are fixed
@@ -96,7 +95,7 @@ class Xcodec2AudioProcessor(Xcodec2AudioProcessorMixin, TorchAudioBackend):
         for i, (start, end) in enumerate(audio_ranges):
             orig_length = end - start
             valid_length = min((orig_length + self.hop_length - 1) // self.hop_length * self.hop_length, padded_length)
-            waveform = torch.nn.functional.pad(audio_values[i, 0, :valid_length], (half_hop, half_hop))
+            waveform = torch.nn.functional.pad(audio_values[i, :valid_length], (half_hop, half_hop))
             f = self.extract_spectrogram([waveform], spectrogram_config=self.spectrogram_config)[0].transpose(-2, -1)
             f = (f - f.mean(0)) / torch.sqrt(f.var(0, unbiased=True) + 1e-7)
             features.append(f)

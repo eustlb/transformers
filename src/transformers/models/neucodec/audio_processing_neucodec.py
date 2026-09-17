@@ -40,7 +40,7 @@ class NeuCodecAudioProcessor(NeuCodecAudioProcessorMixin, Xcodec2AudioProcessor)
             # `end - start` counts the zero sample `_process_audio` appends, which the legacy
             # extractor also pads before rounding up to a hop multiple.
             valid_length = min(-(-(end - start) // self.hop_length) * self.hop_length, padded_length)
-            waveform = audio_values[i, 0, :valid_length]
+            waveform = audio_values[i, :valid_length]
             f = self.extract_spectrogram([waveform], spectrogram_config=self.spectrogram_config)[0].transpose(-2, -1)
             f = (f - f.mean(0)) / torch.sqrt(f.var(0, unbiased=True) + 1e-7)
             features.append(f)

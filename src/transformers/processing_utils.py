@@ -431,9 +431,6 @@ class AudioKwargs(TypedDict, total=False):
         do_batch_spectrogram (`bool`, *optional*):
             Whether to extract the spectrogram on the padded batch at once (`True`) or per waveform with
             feature-level padding (`False`).
-        add_channel_dim (`bool`, *optional*):
-            Whether to insert a channel axis into the batched waveform, giving `(batch, channels, samples)`.
-            Config only — not accepted by `__call__`; see `per_call_kwargs`.
         padding (`bool`, `str` or [`~utils.PaddingStrategy`], *optional*):
             Select a strategy to pad the returned sequences (according to the model's padding side and padding
             index) among:
@@ -474,10 +471,6 @@ class AudioKwargs(TypedDict, total=False):
     spectrogram_config: dict | SpectrogramConfig | None
     do_extract_spectrogram: bool | None
     do_batch_spectrogram: bool | None
-    # TODO: remove `add_channel_dim` — from here and from `BaseAudioProcessor.per_call_kwargs`'s exclusion —
-    # once the six codec models that set it (dia, dac, encodec, xcodec2, vibevoice_acoustic_tokenizer,
-    # kyutai_speech_to_text) align their modeling with the library's batch layout.
-    add_channel_dim: bool | None
     padding: Annotated[bool | str | PaddingStrategy | None, padding_validator()]
     max_length: Annotated[int | None, positive_int()]
     truncation: Annotated[bool | str | TruncationStrategy | None, truncation_validator()]

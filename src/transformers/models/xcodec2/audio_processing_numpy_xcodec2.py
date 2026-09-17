@@ -33,7 +33,7 @@ class Xcodec2AudioProcessorNumpy(Xcodec2AudioProcessorMixin, NumpyAudioBackend):
         for i, (start, end) in enumerate(audio_ranges):
             orig_length = end - start
             valid_length = min((orig_length + self.hop_length - 1) // self.hop_length * self.hop_length, padded_length)
-            waveform = np.pad(audio_values[i, 0, :valid_length], (half_hop, half_hop))
+            waveform = np.pad(audio_values[i, :valid_length], (half_hop, half_hop))
             f = self.extract_spectrogram([waveform], spectrogram_config=self.spectrogram_config)[0].T
             f = (f - f.mean(axis=0)) / np.sqrt(f.var(axis=0, ddof=1) + 1e-7)
             features.append(f)

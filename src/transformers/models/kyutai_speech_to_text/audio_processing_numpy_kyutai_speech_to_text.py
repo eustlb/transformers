@@ -26,7 +26,7 @@ class KyutaiSpeechToTextAudioProcessorNumpy(KyutaiSpeechToTextAudioProcessorMixi
         if pad_left > 0 or pad_right > 0:
             output["audio_values"] = np.pad(
                 output["audio_values"],
-                [(0, 0), (0, 0), (pad_left, pad_right)],
+                [(0, 0), (pad_left, pad_right)],
                 mode="constant",
                 constant_values=0.0,
             )
