@@ -219,7 +219,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
                 raise ValueError(
                     "Streaming `generate` (when `input_features` is a generator of mel chunks) requires "
                     "`num_lookahead_tokens`: it must be passed explicitly. It must match the right attention context "
-                    "used to size the chunks (e.g. `processor.set_num_lookahead_tokens(...)`, then pass the same "
+                    "used to size the chunks (e.g. `processor.audio_processor.set_num_lookahead_tokens(...)`, then pass the same "
                     "`num_lookahead_tokens=...` here)."
                 )
             self._streaming_num_lookahead_tokens = num_lookahead_tokens

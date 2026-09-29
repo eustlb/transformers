@@ -192,12 +192,11 @@ class Nemotron3_5AsrProcessor(NemotronAsrStreamingProcessor):
             Decoding/timestamp emission mode (e.g. `"ctc"`, `"rnnt"`, `"tdt"`). If `None` the decoder type
             is inferred automatically for backward compatibility.
         supported_num_lookahead_tokens (`list[int]`, *optional*):
-            Supported right attention contexts (lookaheads, in subsampled encoder frames), mirroring
-            `NemotronAsrStreamingEncoderConfig.supported_num_lookahead_tokens`. Used to validate
-            `streaming_latency_ms` and to derive the returned `num_lookahead_tokens`.
+            Legacy location of the audio processor's `supported_num_lookahead_tokens`, kept so that configs saving
+            it at the processor level still load. Forwarded to the audio processor when provided.
         default_num_lookahead_tokens (`int`, *optional*):
-            The right context used when `streaming_latency_ms` is not provided. Defaults to the first
-            entry of `supported_num_lookahead_tokens`.
+            Legacy location of the audio processor's `num_lookahead_tokens`, kept so that configs saving it at the
+            processor level still load. Forwarded to the audio processor when provided.
         prompt_dictionary (`dict[str, int]`, *optional*):
             Mapping from a target-language string (e.g. `"en-US"`, `"de-DE"`, the bare code `"de"`, or
             `"auto"`) to its prompt index. Defaults to the NeMo checkpoint's prompt dictionary.
@@ -289,7 +288,6 @@ class Nemotron3_5AsrProcessor(NemotronAsrStreamingProcessor):
         if text is not None:
             encodings = self.tokenizer(text, **output_kwargs["text_kwargs"])
 
-        inputs["num_lookahead_tokens"] = self.default_num_lookahead_tokens
         inputs["prompt_ids"] = self._resolve_prompt_ids(language, len(audio))
 
         if text is None:

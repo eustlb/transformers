@@ -79,8 +79,8 @@ model_id = "nvidia/nemotron-speech-streaming-en-0.6b"
 processor = AutoProcessor.from_pretrained(model_id)
 model = AutoModelForRNNT.from_pretrained(model_id, device_map="auto")
 
-processor.set_num_lookahead_tokens(6)
-print(f"Streaming latency: {processor.streaming_latency_ms} ms")
+processor.audio_processor.set_num_lookahead_tokens(6)
+print(f"Streaming latency: {processor.audio_processor.streaming_latency_ms} ms")
 
 sampling_rate = processor.audio_processor.sampling_rate
 audio = load_audio(
@@ -89,7 +89,7 @@ audio = load_audio(
 )
 
 first_chunk_inputs = processor(
-    audio[: processor.num_samples_first_audio_chunk],
+    audio[: processor.audio_processor.num_samples_first_audio_chunk],
     sampling_rate=sampling_rate,
     is_streaming=True,
     is_first_audio_chunk=True,
@@ -99,14 +99,14 @@ first_chunk_inputs = first_chunk_inputs.to(model.device, dtype=model.dtype)
 
 
 def input_features_generator():
-    yield first_chunk_inputs.input_features[:, : processor.num_mel_frames_first_audio_chunk, :]
+    yield first_chunk_inputs.input_features[:, : processor.audio_processor.num_mel_frames_first_audio_chunk, :]
 
-    mel_frame_idx = processor.num_mel_frames_first_audio_chunk
+    mel_frame_idx = processor.audio_processor.num_mel_frames_first_audio_chunk
     hop_length = processor.audio_processor.hop_length
     n_fft = processor.audio_processor.n_fft
 
     start_idx = mel_frame_idx * hop_length - n_fft // 2
-    while (end_idx := start_idx + processor.num_samples_per_audio_chunk) < audio.shape[0]:
+    while (end_idx := start_idx + processor.audio_processor.num_samples_per_audio_chunk) < audio.shape[0]:
         inputs = processor(
             audio[start_idx:end_idx],
             sampling_rate=sampling_rate,
@@ -117,7 +117,7 @@ def input_features_generator():
         inputs = inputs.to(model.device, dtype=model.dtype)
         yield inputs.input_features
 
-        mel_frame_idx += processor.num_mel_frames_per_audio_chunk
+        mel_frame_idx += processor.audio_processor.num_mel_frames_per_audio_chunk
         start_idx = mel_frame_idx * hop_length - n_fft // 2
 
 
@@ -147,18 +147,18 @@ from transformers import AutoProcessor
 processor = AutoProcessor.from_pretrained("nvidia/nemotron-speech-streaming-en-0.6b")
 
 # Each supported `num_lookahead_tokens` mapped to its streaming latency in milliseconds:
-print(processor.supported_streaming_latencies_ms)
+print(processor.audio_processor.supported_streaming_latencies_ms)
 # {13: 1120, 6: 560, 1: 160, 0: 80}
 
 # Select a right attention context (this also re-derives the streaming chunk sizes used above):
-processor.set_num_lookahead_tokens(6)
+processor.audio_processor.set_num_lookahead_tokens(6)
 
 # Latency of the current selection:
-print(processor.streaming_latency_ms)
+print(processor.audio_processor.streaming_latency_ms)
 # 560
 ```
 
-`set_num_lookahead_tokens` sizes the chunks the processor emits, and the matching `num_lookahead_tokens` must reach `generate` (in the snippet above it travels through `**inputs`/`**first_chunk_inputs`, which carries `num_lookahead_tokens`). Streaming `generate` raises if it is omitted.
+`set_num_lookahead_tokens` sizes the chunks the audio processor emits, and the matching `num_lookahead_tokens` must reach `generate` (in the snippet above it travels through `**inputs`/`**first_chunk_inputs`, which carries `num_lookahead_tokens`). Streaming `generate` raises if it is omitted.
 
 ## NemotronAsrStreamingConfig
 

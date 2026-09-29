@@ -111,3 +111,58 @@ class NemotronAudioProcessorMigrationTest(unittest.TestCase):
             kwargs = processor._merge_kwargs(ProcessingKwargs, audio_kwargs={"return_padding_mask": False})
         self.assertFalse(caught)
         self.assertIs(kwargs["audio_kwargs"]["return_padding_mask"], False)
+
+    def test_streaming_geometry_lives_on_audio_processor(self):
+        audio_processor = self.audio_processor
+        self.assertEqual(audio_processor.num_lookahead_tokens, 13)
+        audio_processor.set_num_lookahead_tokens(6)
+        self.assertEqual(audio_processor.num_mel_frames_first_audio_chunk, 1 + 8 * 6)
+        self.assertEqual(audio_processor.num_mel_frames_per_audio_chunk, 8 * 7)
+        self.assertEqual(audio_processor.num_samples_first_audio_chunk, 48 * 160 + 400 // 2)
+        self.assertEqual(audio_processor.num_samples_per_audio_chunk, 56 * 160 + 400)
+        self.assertEqual(audio_processor.streaming_latency_ms, 560)
+        self.assertEqual(audio_processor.supported_streaming_latencies_ms, {13: 1120, 6: 560, 1: 160, 0: 80})
+        with self.assertRaisesRegex(ValueError, "not supported"):
+            audio_processor.set_num_lookahead_tokens(5)
+
+        audio = np.zeros(1600, dtype=np.float32)
+        self.assertEqual(audio_processor(audio, sampling_rate=16000)["num_lookahead_tokens"], 6)
+        self.assertEqual(
+            audio_processor(audio, sampling_rate=16000, num_lookahead_tokens=1)["num_lookahead_tokens"], 1
+        )
+        with self.assertRaisesRegex(ValueError, "not supported"):
+            audio_processor(audio, sampling_rate=16000, num_lookahead_tokens=5)
+        self.assertIn("num_lookahead_tokens", audio_processor.model_input_names)
+
+        processor = self.make_processor()
+        processor.set_num_lookahead_tokens(1)
+        self.assertEqual(audio_processor.num_lookahead_tokens, 1)
+        self.assertEqual(processor.default_num_lookahead_tokens, 1)
+        self.assertEqual(processor.supported_num_lookahead_tokens, [13, 6, 1, 0])
+        self.assertEqual(processor.num_samples_per_audio_chunk, audio_processor.num_samples_per_audio_chunk)
+        self.assertEqual(processor.streaming_latency_ms, audio_processor.streaming_latency_ms)
+
+    def test_legacy_processor_level_lookahead_config(self):
+        with TemporaryDirectory() as directory:
+            processor = self.make_processor()
+            processor.set_num_lookahead_tokens(6)
+            processor.save_pretrained(directory)
+            config_path = Path(directory) / "processor_config.json"
+            config = json.loads(config_path.read_text())
+            self.assertNotIn("default_num_lookahead_tokens", config)
+            self.assertEqual(config["audio_processor"]["num_lookahead_tokens"], 6)
+            self.assertEqual(AutoProcessor.from_pretrained(directory).audio_processor.num_lookahead_tokens, 6)
+
+            # Hub checkpoints store the lookahead set at the processor level.
+            del config["audio_processor"]["num_lookahead_tokens"]
+            del config["audio_processor"]["supported_num_lookahead_tokens"]
+            config.update(supported_num_lookahead_tokens=[13, 6, 1, 0], default_num_lookahead_tokens=1)
+            config_path.write_text(json.dumps(config))
+            restored = AutoProcessor.from_pretrained(directory)
+            self.assertEqual(restored.audio_processor.num_lookahead_tokens, 1)
+
+            restored.save_pretrained(directory)
+            saved = json.loads(config_path.read_text())
+            self.assertNotIn("default_num_lookahead_tokens", saved)
+            self.assertNotIn("supported_num_lookahead_tokens", saved)
+            self.assertEqual(saved["audio_processor"]["num_lookahead_tokens"], 1)

@@ -30,7 +30,6 @@ class NemotronAsrStreamingProcessorKwargs(ProcessingKwargs, total=False):
             "sampling_rate": 16000,
             "padding": "longest",
             "return_padding_mask": True,
-            "subsampling_factor": 8,
         },
         "text_kwargs": {
             "padding": True,
@@ -39,11 +38,6 @@ class NemotronAsrStreamingProcessorKwargs(ProcessingKwargs, total=False):
         },
         "common_kwargs": {"return_tensors": "pt"},
     }
-
-
-# Default supported right attention contexts (lookaheads, in subsampled encoder frames) of the NeMo
-# cache-aware streaming FastConformer checkpoint. The first entry is the default.
-DEFAULT_NUM_LOOKAHEAD_TOKENS = [13, 6, 1, 0]
 
 
 @auto_docstring
@@ -60,27 +54,19 @@ class NemotronAsrStreamingProcessor(ProcessorMixin):
         blank_token (`str`, *optional*, defaults to `"<blank>"`):
             Blank token for RNN-T decoding.
         supported_num_lookahead_tokens (`list[int]`, *optional*):
-            Right attention contexts (lookaheads, in subsampled encoder frames) the model was trained with.
-            The processor is the single source of truth for this set: [`~NemotronAsrStreamingProcessor.set_num_lookahead_tokens`]
-            validates against it. Defaults to the NeMo cache-aware set `[13, 6, 1, 0]`.
+            Legacy location of the audio processor's `supported_num_lookahead_tokens`, kept so that configs saving
+            it at the processor level still load. Forwarded to the audio processor when provided.
         default_num_lookahead_tokens (`int`, *optional*):
-            The right context used to size streaming chunks and emitted by [`~NemotronAsrStreamingProcessor.__call__`];
-            change it with [`~NemotronAsrStreamingProcessor.set_num_lookahead_tokens`]. Defaults to the first entry of
-            `supported_num_lookahead_tokens`.
+            Legacy location of the audio processor's `num_lookahead_tokens`, kept so that configs saving it at the
+            processor level still load. Forwarded to the audio processor when provided.
         """
-        self.supported_num_lookahead_tokens = (
-            supported_num_lookahead_tokens
-            if supported_num_lookahead_tokens is not None
-            else DEFAULT_NUM_LOOKAHEAD_TOKENS
-        )
-        self.default_num_lookahead_tokens = (
-            default_num_lookahead_tokens
-            if default_num_lookahead_tokens is not None
-            else self.supported_num_lookahead_tokens[0]
-        )
         self.blank_token = blank_token
         self.blank_token_id = tokenizer.convert_tokens_to_ids(blank_token)
         super().__init__(audio_processor, tokenizer)
+        if supported_num_lookahead_tokens is not None:
+            self.audio_processor.supported_num_lookahead_tokens = supported_num_lookahead_tokens
+        if default_num_lookahead_tokens is not None:
+            self.audio_processor.set_num_lookahead_tokens(default_num_lookahead_tokens)
 
     @auto_docstring
     def __call__(
@@ -108,12 +94,10 @@ class NemotronAsrStreamingProcessor(ProcessorMixin):
             `True` when `is_streaming=False`.
 
         Returns:
-            [`BatchFeature`]: the feature-extractor (and optional tokenizer) outputs, augmented with:
-
-            - **num_lookahead_tokens** -- The right attention context (lookahead, in subsampled encoder frames),
-              i.e. `default_num_lookahead_tokens` (set via [`~NemotronAsrStreamingProcessor.set_num_lookahead_tokens`]).
-              Pass it to the model/encoder forward (or `generate`); it plays the role of Voxtral Realtime's
-              `num_delay_tokens`.
+            [`BatchFeature`]: the audio processor (and optional tokenizer) outputs. The audio processor returns
+            `num_lookahead_tokens`, the right attention context (lookahead, in subsampled encoder frames) the chunks
+            were sized for (set via [`~NemotronAsrStreamingAudioProcessor.set_num_lookahead_tokens`]). Pass it to the
+            model/encoder forward (or `generate`); it plays the role of Voxtral Realtime's `num_delay_tokens`.
         """
         if not is_streaming and not is_first_audio_chunk:
             raise ValueError("In non-streaming mode (`is_streaming=False`), `is_first_audio_chunk` must be `True`.")
@@ -139,8 +123,6 @@ class NemotronAsrStreamingProcessor(ProcessorMixin):
             inputs = self.audio_processor(audio, center=bool(is_first_audio_chunk), **output_kwargs["audio_kwargs"])
         if text is not None:
             encodings = self.tokenizer(text, **output_kwargs["text_kwargs"])
-
-        inputs["num_lookahead_tokens"] = self.default_num_lookahead_tokens
 
         if text is None:
             return inputs
@@ -179,14 +161,10 @@ class NemotronAsrStreamingProcessor(ProcessorMixin):
             # Derive per-step frame indices from cumulative sum of durations.
             timestamps = durations.cumsum(dim=-1) - durations
 
-            output_kwargs = self._merge_kwargs(
-                NemotronAsrStreamingProcessorKwargs,
-                tokenizer_init_kwargs=self.tokenizer.init_kwargs,
-            )
             frame_rate = (
-                self.audio_processor.hop_length
+                self.audio_processor.spectrogram_config.stft_config.hop_length
                 / self.audio_processor.sampling_rate
-                * output_kwargs["audio_kwargs"]["subsampling_factor"]
+                * self.audio_processor.subsampling_factor
             )
             # Filter padding/blank tokens and decode per sequence to keep track of token-level timestamps
             # See `compute_rnnt_timestamps` in NeMo:
@@ -224,90 +202,42 @@ class NemotronAsrStreamingProcessor(ProcessorMixin):
             offset["end"] = offset["end"] * frame_rate
         return char_offsets
 
+    # Streaming geometry lives on the audio processor; these forward to it.
+    @property
+    def supported_num_lookahead_tokens(self) -> list[int]:
+        return self.audio_processor.supported_num_lookahead_tokens
+
+    @property
+    def default_num_lookahead_tokens(self) -> int:
+        return self.audio_processor.num_lookahead_tokens
+
     def set_num_lookahead_tokens(self, num_lookahead_tokens: int):
-        """
-        Select the right attention context (lookahead, in subsampled encoder frames) used for streaming.
-
-        Sets `default_num_lookahead_tokens`, so every derived streaming property
-        (`num_mel_frames_first_audio_chunk`, `num_mel_frames_per_audio_chunk`, `num_samples_first_audio_chunk`,
-        `num_samples_per_audio_chunk`) re-derives from the new value. `num_lookahead_tokens` must be one of
-        `supported_num_lookahead_tokens`.
-
-        Pass the same `num_lookahead_tokens` to `model.generate` so the attention right context used in the
-        forward matches the chunk sizes produced here; otherwise streaming `generate` raises.
-        """
-        if num_lookahead_tokens not in self.supported_num_lookahead_tokens:
-            raise ValueError(
-                f"`num_lookahead_tokens={num_lookahead_tokens}` is not supported by this model. Supported "
-                f"values: {list(self.supported_num_lookahead_tokens)}."
-            )
-        self.default_num_lookahead_tokens = num_lookahead_tokens
-
-    @property
-    def _subsampling_factor(self) -> int:
-        output_kwargs = self._merge_kwargs(
-            NemotronAsrStreamingProcessorKwargs, tokenizer_init_kwargs=self.tokenizer.init_kwargs
-        )
-        return output_kwargs["audio_kwargs"]["subsampling_factor"]
-
-    @property
-    def _encoder_frame_ms(self) -> float:
-        """Duration in milliseconds of one subsampled encoder frame (`subsampling_factor * hop_length / sampling_rate`)."""
-        return self._subsampling_factor * self.audio_processor.hop_length / self.audio_processor.sampling_rate * 1000
+        """Forwards to the audio processor's `set_num_lookahead_tokens`."""
+        self.audio_processor.set_num_lookahead_tokens(num_lookahead_tokens)
 
     @property
     def streaming_latency_ms(self) -> int:
-        """
-        Streaming latency (ms) of the currently-selected right attention context
-        (`default_num_lookahead_tokens`, settable via [`~NemotronAsrStreamingProcessor.set_num_lookahead_tokens`]).
-
-        The model emits a chunk only once its last frame has its full lookahead, so the delay of a right
-        context `r` is `(r + 1)` encoder frames, i.e. `(r + 1) * encoder_frame_ms`.
-        """
-        return round((self.default_num_lookahead_tokens + 1) * self._encoder_frame_ms)
+        return self.audio_processor.streaming_latency_ms
 
     @property
     def supported_streaming_latencies_ms(self) -> dict[int, int]:
-        """
-        Mapping from each supported right attention context (`supported_num_lookahead_tokens`) to its streaming
-        latency in milliseconds (`(num_lookahead_tokens + 1) * encoder_frame_ms`).
-        """
-        frame_ms = self._encoder_frame_ms
-        return {right: round((right + 1) * frame_ms) for right in self.supported_num_lookahead_tokens}
+        return self.audio_processor.supported_streaming_latencies_ms
 
     @property
     def num_mel_frames_first_audio_chunk(self) -> int:
-        """
-        Number of mel frames the first cache-aware streaming chunk must carry, for the model's
-        `default_num_lookahead_tokens`: `1 + subsampling_factor * num_lookahead_tokens`.
-        """
-        return 1 + self._subsampling_factor * self.default_num_lookahead_tokens
+        return self.audio_processor.num_mel_frames_first_audio_chunk
 
     @property
     def num_mel_frames_per_audio_chunk(self) -> int:
-        """
-        Number of mel frames each subsequent cache-aware streaming chunk must carry, for the model's
-        `default_num_lookahead_tokens`: `subsampling_factor * (num_lookahead_tokens + 1)`.
-        """
-        return self._subsampling_factor * (self.default_num_lookahead_tokens + 1)
+        return self.audio_processor.num_mel_frames_per_audio_chunk
 
     @property
     def num_samples_first_audio_chunk(self) -> int:
-        """
-        Number of raw audio samples to feed the processor (with `is_first_audio_chunk=True`, i.e. `center=True`)
-        so it returns exactly `num_mel_frames_first_audio_chunk` frames.
-        """
-        return (
-            self.num_mel_frames_first_audio_chunk - 1
-        ) * self.audio_processor.hop_length + self.audio_processor.win_length // 2
+        return self.audio_processor.num_samples_first_audio_chunk
 
     @property
     def num_samples_per_audio_chunk(self) -> int:
-        """
-        Number of raw audio samples to feed the processor (with `is_first_audio_chunk=False`, i.e. `center=False`)
-        so it returns exactly `num_mel_frames_per_audio_chunk` frames.
-        """
-        return self.num_mel_frames_per_audio_chunk * self.audio_processor.hop_length + self.audio_processor.win_length
+        return self.audio_processor.num_samples_per_audio_chunk
 
 
 __all__ = ["NemotronAsrStreamingProcessor"]

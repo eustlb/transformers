@@ -221,17 +221,17 @@ class NemotronAsrStreamingForRNNTIntegrationTest(unittest.TestCase):
         `supported_streaming_latencies_ms` maps every supported right context to its latency. The streaming
         delay of a right context `r` is `(r + 1)` encoder frames, each `subsampling_factor * hop_length /
         sampling_rate` seconds long."""
-        processor = self.processor
-        fe = processor.feature_extractor
-        frame_ms = processor._subsampling_factor * fe.hop_length / fe.sampling_rate * 1000
+        audio_processor = self.processor.audio_processor
+        hop_length = audio_processor.spectrogram_config.stft_config.hop_length
+        frame_ms = audio_processor.subsampling_factor * hop_length / audio_processor.sampling_rate * 1000
 
-        for right in processor.supported_num_lookahead_tokens:
-            processor.set_num_lookahead_tokens(right)
-            self.assertEqual(processor.streaming_latency_ms, round((right + 1) * frame_ms))
+        for right in audio_processor.supported_num_lookahead_tokens:
+            audio_processor.set_num_lookahead_tokens(right)
+            self.assertEqual(audio_processor.streaming_latency_ms, round((right + 1) * frame_ms))
 
         self.assertEqual(
-            processor.supported_streaming_latencies_ms,
-            {right: round((right + 1) * frame_ms) for right in processor.supported_num_lookahead_tokens},
+            audio_processor.supported_streaming_latencies_ms,
+            {right: round((right + 1) * frame_ms) for right in audio_processor.supported_num_lookahead_tokens},
         )
 
     @slow
@@ -298,10 +298,10 @@ class NemotronAsrStreamingForRNNTIntegrationTest(unittest.TestCase):
         # Select the streaming right attention context (lookahead, in subsampled encoder frames). This sizes
         # the audio/mel chunks the processor emits and must reach `generate` so the forward matches; it travels
         # through `**first_chunk_inputs` below.
-        self.processor.set_num_lookahead_tokens(6)
+        self.processor.audio_processor.set_num_lookahead_tokens(6)
 
         first_chunk_inputs = self.processor(
-            audio[: self.processor.num_samples_first_audio_chunk],
+            audio[: self.processor.audio_processor.num_samples_first_audio_chunk],
             sampling_rate=sampling_rate,
             is_streaming=True,
             is_first_audio_chunk=True,
@@ -310,14 +310,16 @@ class NemotronAsrStreamingForRNNTIntegrationTest(unittest.TestCase):
         first_chunk_inputs = first_chunk_inputs.to(model.device, dtype=model.dtype)
 
         def input_features_generator():
-            yield first_chunk_inputs.input_features[:, : self.processor.num_mel_frames_first_audio_chunk, :]
+            yield first_chunk_inputs.input_features[
+                :, : self.processor.audio_processor.num_mel_frames_first_audio_chunk, :
+            ]
 
-            mel_frame_idx = self.processor.num_mel_frames_first_audio_chunk
+            mel_frame_idx = self.processor.audio_processor.num_mel_frames_first_audio_chunk
             hop_length = self.processor.feature_extractor.hop_length
             n_fft = self.processor.feature_extractor.n_fft
 
             start_idx = mel_frame_idx * hop_length - n_fft // 2
-            while (end_idx := start_idx + self.processor.num_samples_per_audio_chunk) < audio.shape[0]:
+            while (end_idx := start_idx + self.processor.audio_processor.num_samples_per_audio_chunk) < audio.shape[0]:
                 inputs = self.processor(
                     audio[start_idx:end_idx],
                     sampling_rate=sampling_rate,
@@ -328,7 +330,7 @@ class NemotronAsrStreamingForRNNTIntegrationTest(unittest.TestCase):
                 inputs = inputs.to(model.device, dtype=model.dtype)
                 yield inputs.input_features
 
-                mel_frame_idx += self.processor.num_mel_frames_per_audio_chunk
+                mel_frame_idx += self.processor.audio_processor.num_mel_frames_per_audio_chunk
                 start_idx = mel_frame_idx * hop_length - n_fft // 2
 
         streamer = TextIteratorStreamer(self.processor.tokenizer, skip_special_tokens=True)

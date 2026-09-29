@@ -21,6 +21,20 @@
 
 from ...audio_processing_backends import TorchAudioBackend
 from ...audio_processing_utils import BaseAudioProcessor
+from ...processing_utils import AudioKwargs
+
+
+class NemotronAsrStreamingAudioProcessorKwargs(AudioKwargs, total=False):
+    r"""
+    supported_num_lookahead_tokens (`list[int]`, *optional*, defaults to `[13, 6, 1, 0]`):
+        Right attention contexts (lookaheads, in subsampled encoder frames) the model was trained with.
+    num_lookahead_tokens (`int`, *optional*, defaults to 13):
+        Right attention context used to size streaming chunks, returned alongside the features so that the
+        model's forward (or `generate`) uses the same one. Must be one of `supported_num_lookahead_tokens`.
+    """
+
+    supported_num_lookahead_tokens: list[int]
+    num_lookahead_tokens: int
 
 
 class NemotronAsrStreamingAudioProcessorMixin:
@@ -54,20 +68,112 @@ class NemotronAsrStreamingAudioProcessorMixin:
     # Unlike Parakeet, Nemotron consumes log-mel features without per-feature
     # standardization. Override the inherited recipe explicitly.
     feature_normalization = None
+    # Time reduction of the encoder's subsampling stack (`encoder_config.subsampling_factor`).
+    subsampling_factor = 8
+    # NeMo cache-aware streaming FastConformer checkpoint; the first entry is the default.
+    supported_num_lookahead_tokens = [13, 6, 1, 0]
+    num_lookahead_tokens = 13
+    extra_model_input_names = ["num_lookahead_tokens"]
+    skip_tensor_conversion = ["num_lookahead_tokens"]
+    valid_kwargs = NemotronAsrStreamingAudioProcessorKwargs
 
-    def _validate_preprocess_kwargs(self, *, do_extract_spectrogram, **kwargs):
+    def _validate_preprocess_kwargs(
+        self, *, do_extract_spectrogram, num_lookahead_tokens, supported_num_lookahead_tokens, **kwargs
+    ):
         if not do_extract_spectrogram:
             raise ValueError("Nemotron streaming requires spectrogram extraction.")
+        if num_lookahead_tokens not in supported_num_lookahead_tokens:
+            raise ValueError(
+                f"`num_lookahead_tokens={num_lookahead_tokens}` is not supported by this model. Supported "
+                f"values: {list(supported_num_lookahead_tokens)}."
+            )
         BaseAudioProcessor._validate_preprocess_kwargs(self, do_extract_spectrogram=do_extract_spectrogram, **kwargs)
 
-    def _finalize_output(self, output, audio_ranges=None, feature_ranges=None, **kwargs):
+    def _finalize_output(self, output, audio_ranges=None, feature_ranges=None, *, num_lookahead_tokens, **kwargs):
         features = output.pop("audio_features")
         mask = output.pop("audio_features_mask", None)
         if mask is not None:
             features = features * self._astype(mask[..., None], str(features.dtype).removeprefix("torch."))
             output["audio_features_mask"] = mask
         output["audio_features"] = features
+        output["num_lookahead_tokens"] = num_lookahead_tokens
         return output
+
+    def set_num_lookahead_tokens(self, num_lookahead_tokens: int):
+        """
+        Select the right attention context (lookahead, in subsampled encoder frames) used for streaming.
+
+        Sets `num_lookahead_tokens`, so every derived streaming property (`num_mel_frames_first_audio_chunk`,
+        `num_mel_frames_per_audio_chunk`, `num_samples_first_audio_chunk`, `num_samples_per_audio_chunk`)
+        re-derives from the new value. `num_lookahead_tokens` must be one of `supported_num_lookahead_tokens`.
+
+        The returned features carry `num_lookahead_tokens`; pass it to `model.generate` so the attention right
+        context used in the forward matches the chunk sizes produced here, otherwise streaming `generate` raises.
+        """
+        if num_lookahead_tokens not in self.supported_num_lookahead_tokens:
+            raise ValueError(
+                f"`num_lookahead_tokens={num_lookahead_tokens}` is not supported by this model. Supported "
+                f"values: {list(self.supported_num_lookahead_tokens)}."
+            )
+        self.num_lookahead_tokens = num_lookahead_tokens
+
+    @property
+    def _encoder_frame_ms(self) -> float:
+        """Duration in milliseconds of one subsampled encoder frame."""
+        return self.subsampling_factor * self.spectrogram_config.stft_config.hop_length / self.sampling_rate * 1000
+
+    @property
+    def streaming_latency_ms(self) -> int:
+        """
+        Streaming latency (ms) of the currently-selected right attention context (`num_lookahead_tokens`).
+
+        The model emits a chunk only once its last frame has its full lookahead, so the delay of a right
+        context `r` is `(r + 1)` encoder frames, i.e. `(r + 1) * encoder_frame_ms`.
+        """
+        return round((self.num_lookahead_tokens + 1) * self._encoder_frame_ms)
+
+    @property
+    def supported_streaming_latencies_ms(self) -> dict[int, int]:
+        """
+        Mapping from each supported right attention context (`supported_num_lookahead_tokens`) to its streaming
+        latency in milliseconds (`(num_lookahead_tokens + 1) * encoder_frame_ms`).
+        """
+        frame_ms = self._encoder_frame_ms
+        return {right: round((right + 1) * frame_ms) for right in self.supported_num_lookahead_tokens}
+
+    @property
+    def num_mel_frames_first_audio_chunk(self) -> int:
+        """
+        Number of mel frames the first cache-aware streaming chunk must carry:
+        `1 + subsampling_factor * num_lookahead_tokens`.
+        """
+        return 1 + self.subsampling_factor * self.num_lookahead_tokens
+
+    @property
+    def num_mel_frames_per_audio_chunk(self) -> int:
+        """
+        Number of mel frames each subsequent cache-aware streaming chunk must carry:
+        `subsampling_factor * (num_lookahead_tokens + 1)`.
+        """
+        return self.subsampling_factor * (self.num_lookahead_tokens + 1)
+
+    @property
+    def num_samples_first_audio_chunk(self) -> int:
+        """
+        Number of raw audio samples to feed with `center=True` (the first chunk) so that exactly
+        `num_mel_frames_first_audio_chunk` frames are returned.
+        """
+        stft_config = self.spectrogram_config.stft_config
+        return (self.num_mel_frames_first_audio_chunk - 1) * stft_config.hop_length + stft_config.win_length // 2
+
+    @property
+    def num_samples_per_audio_chunk(self) -> int:
+        """
+        Number of raw audio samples to feed with `center=False` (subsequent chunks) so that exactly
+        `num_mel_frames_per_audio_chunk` frames are returned.
+        """
+        stft_config = self.spectrogram_config.stft_config
+        return self.num_mel_frames_per_audio_chunk * stft_config.hop_length + stft_config.win_length
 
 
 class NemotronAsrStreamingAudioProcessor(NemotronAsrStreamingAudioProcessorMixin, TorchAudioBackend):
