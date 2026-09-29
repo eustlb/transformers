@@ -50,6 +50,7 @@ class BaseAudioProcessor(AudioProcessingMixin):
     # Keys `_finalize_output` adds on top of the derived ones, for `model_input_names`.
     extra_model_input_names: list[str] = []
     dither: float = 0.0
+    use_fused_cuda: bool | None = None
     feature_normalization: str | None = None
     feature_normalization_eps: float = 1e-5
     # Output keys left untouched by `convert_to_tensors`, for non-array metadata a model
@@ -347,6 +348,7 @@ class BaseAudioProcessor(AudioProcessingMixin):
         *,
         audio_ranges,
         spectrogram_config,
+        use_fused_cuda=None,
         **kwargs,
     ):
         """Compute the complete batched feature recipe before masks and output augmentation.
@@ -359,6 +361,7 @@ class BaseAudioProcessor(AudioProcessingMixin):
             audio,
             spectrogram_config=spectrogram_config,
             audio_ranges=audio_ranges,
+            use_fused_cuda=use_fused_cuda,
             **kwargs,
         )
         audio_lengths = np.asarray([end - start for start, end in audio_ranges])
