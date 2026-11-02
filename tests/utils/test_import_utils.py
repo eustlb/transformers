@@ -22,6 +22,8 @@ from transformers.utils.import_utils import (
     clear_import_cache,
     is_flash_attn_2_available,
     is_flash_attn_3_available,
+    is_torchcodec_available,
+    is_torchcodec_greater_or_equal,
 )
 
 
@@ -487,3 +489,52 @@ def test_legacy_fast_image_processor_module_alias():
     # Only paths that actually existed are aliased.
     with pytest.raises(ModuleNotFoundError):
         import transformers.models.aria.image_processing_pil_aria_fast  # noqa: F401
+
+
+@contextmanager
+def torchcodec_installed_but_unloadable():
+    """Simulate a torchcodec install whose native libraries fail to load (e.g. a wheel built for another torch)."""
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torchcodec" or name.startswith("torchcodec."):
+            raise OSError("Could not load this library: libtorchcodec_core.so")
+        return real_import(name, *args, **kwargs)
+
+    is_torchcodec_available.cache_clear()
+    is_torchcodec_greater_or_equal.cache_clear()
+    logging.warning_once.cache_clear()
+    try:
+        with (
+            patch("transformers.utils.import_utils._is_package_available", return_value=(True, "0.17.0")),
+            patch("builtins.__import__", side_effect=fake_import),
+        ):
+            yield
+    finally:
+        is_torchcodec_available.cache_clear()
+        is_torchcodec_greater_or_equal.cache_clear()
+
+
+def test_is_torchcodec_available_is_false_when_torchcodec_fails_to_load():
+    logger = logging.get_logger("transformers.utils.import_utils")
+    with torchcodec_installed_but_unloadable(), CaptureLogger(logger) as captured_logs:
+        assert not is_torchcodec_available()
+        assert not is_torchcodec_available()
+        assert not is_torchcodec_greater_or_equal("0.3.0")
+
+    logs = captured_logs.out
+    assert logs.count("torchcodec is installed but failed to load") == 1
+    assert "Could not load this library" in logs
+    assert "--index-url https://download.pytorch.org/whl/" in logs
+
+
+def test_is_torchcodec_available_is_true_when_torchcodec_loads():
+    is_torchcodec_available.cache_clear()
+    try:
+        with (
+            patch("transformers.utils.import_utils._is_package_available", return_value=(True, "0.17.0")),
+            patch.dict(sys.modules, {"torchcodec": ModuleType("torchcodec")}),
+        ):
+            assert is_torchcodec_available()
+    finally:
+        is_torchcodec_available.cache_clear()

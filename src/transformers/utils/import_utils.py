@@ -1195,7 +1195,21 @@ def is_decord_available() -> bool:
 @lru_cache
 @_make_compile_constant
 def is_torchcodec_available() -> bool:
-    return _is_package_available("torchcodec")[0]
+    if not _is_package_available("torchcodec")[0]:
+        return False
+    # Being installed is not enough: torchcodec's native libraries are built against a specific torch (and CUDA)
+    # version and pip does not enforce it, e.g. the PyPI wheel fails to load next to a CPU or cu128 torch. Import it
+    # once so callers fall back to another backend instead of crashing on first use.
+    try:
+        import torchcodec  # noqa: F401
+    except Exception as error:
+        logger.warning_once(
+            f"torchcodec is installed but failed to load ({error}), so it will not be used. Install the torchcodec "
+            "build matching your torch version, e.g. `pip install torchcodec --index-url "
+            "https://download.pytorch.org/whl/cpu` (or `.../whl/cu128`, etc.)."
+        )
+        return False
+    return True
 
 
 @lru_cache
@@ -2022,10 +2036,13 @@ Please note that you may need to restart your runtime after installation.
 """
 
 TORCHCODEC_IMPORT_ERROR = """
-{0} requires the TorchCodec (https://github.com/pytorch/torchcodec) library, but it was not found in your environment. You can install it with:
+{0} requires the TorchCodec (https://github.com/pytorch/torchcodec) library, but it was not found in your environment
+or failed to load. You can install it with:
 ```
 pip install torchcodec
 ```
+If it is installed but failed to load (see the warning above for the reason), install the build matching your torch
+version instead, e.g. `pip install torchcodec --index-url https://download.pytorch.org/whl/cpu` (or `.../whl/cu128`, etc.).
 Please note that you may need to restart your runtime after installation.
 """
 

@@ -1990,3 +1990,49 @@ class LoadAudioTester(unittest.TestCase):
     def test_unknown_backend_raises(self):
         with self.assertRaises(ValueError):
             load_audio(self._path("audio.wav"), sampling_rate=16000, backend="not_a_backend")
+
+
+@require_librosa
+class LoadAudioUnloadableTorchcodecTest(unittest.TestCase):
+    """torchcodec installed but unable to load (e.g. a wheel built for another torch): `auto` must fall back."""
+
+    def setUp(self):
+        import soundfile as sf
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.wav_path = os.path.join(self.tmpdir, "audio.wav")
+        sf.write(self.wav_path, np.zeros(44100, dtype=np.float32), 44100)
+
+        real_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "torchcodec" or name.startswith("torchcodec."):
+                raise OSError("Could not load this library: libtorchcodec_core.so")
+            return real_import(name, *args, **kwargs)
+
+        self._clear_caches()
+        for patcher in (
+            patch("transformers.utils.import_utils._is_package_available", return_value=(True, "0.17.0")),
+            patch("builtins.__import__", side_effect=fake_import),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self._clear_caches)
+        self.addCleanup(shutil.rmtree, self.tmpdir)
+
+    @staticmethod
+    def _clear_caches():
+        from transformers.utils.import_utils import is_torchcodec_available, is_torchcodec_greater_or_equal
+
+        is_torchcodec_available.cache_clear()
+        is_torchcodec_greater_or_equal.cache_clear()
+
+    def test_auto_backend_falls_back(self):
+        audio = load_audio(self.wav_path, sampling_rate=16000)
+        self.assertEqual(audio.shape, (16000,))
+
+    def test_explicit_torchcodec_backend_raises_with_fix(self):
+        with self.assertRaises(ImportError) as error:
+            load_audio(self.wav_path, sampling_rate=16000, backend="torchcodec")
+        self.assertIn("failed to load", str(error.exception))
+        self.assertIn("--index-url https://download.pytorch.org/whl/", str(error.exception))

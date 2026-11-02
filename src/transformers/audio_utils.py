@@ -17,7 +17,6 @@ and remove unnecessary dependencies.
 """
 
 import base64
-import importlib
 import io
 import os
 import warnings
@@ -28,7 +27,6 @@ from urllib.parse import urlparse
 
 import numpy as np
 from huggingface_hub.utils import httpx
-from packaging import version
 
 from .utils import (
     is_librosa_available,
@@ -36,7 +34,7 @@ from .utils import (
     is_soundfile_available,
     is_torch_tensor,
     is_torchaudio_available,
-    is_torchcodec_available,
+    is_torchcodec_greater_or_equal,
     requires_backends,
 )
 from .utils.generic import retry
@@ -56,9 +54,6 @@ if is_librosa_available():
 
 if is_torchaudio_available():
     import torchaudio
-
-if is_torchcodec_available():
-    TORCHCODEC_VERSION = version.parse(importlib.metadata.version("torchcodec"))
 
 AudioInput = Union[np.ndarray, "torch.Tensor", Sequence[np.ndarray], Sequence["torch.Tensor"]]
 
@@ -228,9 +223,7 @@ def load_audio(audio: str | np.ndarray, sampling_rate=16000, timeout=None, backe
 
     # torchcodec handles audio/video; librosa only plain audio. `backend` lets callers pin one.
     if backend == "auto":
-        resolved_backend = (
-            "torchcodec" if is_torchcodec_available() and version.parse("0.3.0") <= TORCHCODEC_VERSION else "librosa"
-        )
+        resolved_backend = "torchcodec" if is_torchcodec_greater_or_equal("0.3.0") else "librosa"
     elif backend in ("torchcodec", "librosa", "torchaudio"):
         resolved_backend = backend
     else:
