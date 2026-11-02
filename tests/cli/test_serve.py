@@ -44,9 +44,10 @@ from transformers.cli.serving.utils import (
     response_events_to_chunks,
 )
 from transformers.testing_utils import (
-    require_librosa,
     require_multipart,
     require_serve,
+    require_soundfile,
+    require_soxr,
     require_torch_accelerator,
     require_torchcodec,
     require_vision,
@@ -2621,7 +2622,8 @@ class TestReasoningGemma(_TestReasoningBase, ServeIntegrationTestCase):
 
 
 @slow
-@require_librosa
+@require_soundfile
+@require_soxr
 @require_multipart
 @require_serve
 class TestTranscription(ServeIntegrationTestCase):

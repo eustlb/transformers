@@ -45,7 +45,7 @@ import torch
 from scipy.io import wavfile
 
 from transformers import AutoFeatureExtractor, VibeVoiceAcousticTokenizerModel
-from transformers.audio_utils import load_audio_librosa
+from transformers.audio_utils import load_audio
 
 
 model_id = "microsoft/VibeVoice-AcousticTokenizer"
@@ -57,9 +57,10 @@ print("Model loaded on device:", model.device)
 print("Model dtype:", model.dtype)
 
 # load audio
-audio = load_audio_librosa(
+audio = load_audio(
     "https://huggingface.co/datasets/bezzam/vibevoice_samples/resolve/main/voices/en-Alice_woman.wav",
     sampling_rate=feature_extractor.sampling_rate,
+    backend="soundfile",
 )
 
 # preprocess audio
@@ -96,7 +97,7 @@ import torch
 from scipy.io import wavfile
 
 from transformers import AutoFeatureExtractor, VibeVoiceAcousticTokenizerModel
-from transformers.audio_utils import load_audio_librosa
+from transformers.audio_utils import load_audio
 
 
 model_id = "microsoft/VibeVoice-AcousticTokenizer"
@@ -108,9 +109,10 @@ print("Model loaded on device:", model.device)
 print("Model dtype:", model.dtype)
 
 # load audio
-audio = load_audio_librosa(
+audio = load_audio(
     "https://huggingface.co/datasets/bezzam/vibevoice_samples/resolve/main/voices/en-Alice_woman.wav",
     sampling_rate=feature_extractor.sampling_rate,
+    backend="soundfile",
 )
 
 # preprocess audio
