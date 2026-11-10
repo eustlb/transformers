@@ -1307,7 +1307,11 @@ class ProcessorMixin(PushToHubMixin):
         """
         # The audio tokenizer (if any) lives in another repository: it gets the Hub access and placement kwargs only, not
         # the ones that locate files in this repository (`revision`, `subfolder`) or override sub-processors.
-        audio_tokenizer_kwargs = {key: kwargs[key] for key in AUDIO_TOKENIZER_KWARGS if key in kwargs}
+        # `audio_tokenizer_kwargs` adds kwargs meant for the audio tokenizer alone, e.g. `{"encoder_config": None}`.
+        audio_tokenizer_kwargs = {
+            **{key: kwargs[key] for key in AUDIO_TOKENIZER_KWARGS if key in kwargs},
+            **(kwargs.pop("audio_tokenizer_kwargs", None) or {}),
+        }
 
         cache_dir = kwargs.pop("cache_dir", None)
         force_download = kwargs.pop("force_download", False)
@@ -1832,8 +1836,12 @@ class ProcessorMixin(PushToHubMixin):
             **kwargs
                 Additional keyword arguments passed along to both
                 [`~feature_extraction_utils.FeatureExtractionMixin.from_pretrained`] and
-                [`~tokenization_utils_base.PreTrainedTokenizer.from_pretrained`].
+                [`~tokenization_utils_base.PreTrainedTokenizer.from_pretrained`]. `audio_tokenizer_kwargs` (`dict`) is
+                passed only to the audio tokenizer's `from_pretrained`, e.g. `{"encoder_config": None}` to load a
+                codec without its encoder.
         """
+        # the sub-processors never see it: a tokenizer would keep it in its init kwargs
+        audio_tokenizer_kwargs = kwargs.pop("audio_tokenizer_kwargs", None)
         kwargs["cache_dir"] = cache_dir
         kwargs["force_download"] = force_download
         kwargs["local_files_only"] = local_files_only
@@ -1850,7 +1858,9 @@ class ProcessorMixin(PushToHubMixin):
             kwargs["token"] = token
 
         # Get processor_dict first so we can use it to instantiate non-tokenizer sub-processors
-        processor_dict, instantiation_kwargs = cls.get_processor_dict(pretrained_model_name_or_path, **kwargs)
+        processor_dict, instantiation_kwargs = cls.get_processor_dict(
+            pretrained_model_name_or_path, audio_tokenizer_kwargs=audio_tokenizer_kwargs, **kwargs
+        )
         args = cls._get_arguments_from_pretrained(pretrained_model_name_or_path, processor_dict, **kwargs)
         return cls.from_args_and_dict(args, processor_dict, **instantiation_kwargs)
 
