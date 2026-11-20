@@ -17,16 +17,18 @@ from queue import Empty
 from threading import Thread
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 from transformers import (
     AsyncTextIteratorStreamer,
+    AudioIteratorStreamer,
     AutoTokenizer,
     TextIteratorStreamer,
     TextStreamer,
     is_torch_available,
 )
-from transformers.testing_utils import CaptureStdout, require_torch, torch_device
+from transformers.testing_utils import CaptureStdout, require_torch, require_torchaudio, torch_device
 from transformers.utils.logging import _get_library_root_logger
 
 from ..test_modeling_common import ids_tensor
@@ -35,7 +37,7 @@ from ..test_modeling_common import ids_tensor
 if is_torch_available():
     import torch
 
-    from transformers import AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM, NemotronAsrStreamingAudioProcessor
 
 
 @require_torch
@@ -172,3 +174,40 @@ class AsyncStreamerTester(unittest.IsolatedAsyncioTestCase):
             streamer_text = ""
             async for new_text in streamer:
                 streamer_text += new_text
+
+
+@require_torch
+@require_torchaudio
+class AudioIteratorStreamerTester(unittest.TestCase):
+    def test_audio_processor_chunks_match_manual_loop(self):
+        audio_processor = NemotronAsrStreamingAudioProcessor()
+        audio_processor.set_num_lookahead_tokens(6)
+        audio = np.random.RandomState(0).randn(3 * 16000).astype(np.float32)
+
+        streamer = AudioIteratorStreamer(audio_processor)
+        self.assertEqual(streamer.model_kwargs, {"num_lookahead_tokens": 6})
+
+        def produce():
+            for start in range(0, len(audio), 1234):
+                streamer.put(audio[start : start + 1234])
+            streamer.end()
+
+        thread = Thread(target=produce)
+        thread.start()
+        chunks = list(streamer)
+        thread.join()
+
+        # The manual chunking loop from the model docs.
+        stft_config = audio_processor.spectrogram_config.stft_config
+        num_frames = audio_processor.num_mel_frames_first_audio_chunk
+        first_chunk = audio[: audio_processor.num_samples_first_audio_chunk]
+        expected = [audio_processor(first_chunk, center=True, return_tensors="pt").input_features[:, :num_frames]]
+        start = num_frames * stft_config.hop_length - stft_config.n_fft // 2
+        while (end := start + audio_processor.num_samples_per_audio_chunk) < len(audio):
+            expected.append(audio_processor(audio[start:end], center=False, return_tensors="pt").input_features)
+            num_frames += audio_processor.num_mel_frames_per_audio_chunk
+            start = num_frames * stft_config.hop_length - stft_config.n_fft // 2
+
+        self.assertEqual(len(chunks), len(expected))
+        for chunk, expected_chunk in zip(chunks, expected):
+            torch.testing.assert_close(chunk, expected_chunk, rtol=0, atol=0)

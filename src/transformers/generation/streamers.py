@@ -450,14 +450,16 @@ class AudioIteratorStreamer(BaseInputStreamer):
     A producer thread pushes raw mono audio samples with [`~AudioIteratorStreamer.put`] (one or many calls, e.g.
     a real-time microphone feed) and calls [`~AudioIteratorStreamer.end`] when the stream is over. A consumer
     (typically `model.generate` running in a worker thread) iterates over the streamer to receive the
-    `input_features` chunks the model expects. All chunking geometry is derived from the processor, so the
-    same class works for any processor exposing `num_samples_first_audio_chunk` and
-    `num_samples_per_audio_chunk`, plus a feature extractor with `hop_length`, `win_length`, `n_fft`,
-    `feature_size`.
+    `input_features` chunks the model expects. Chunk sizes are read from `processor`
+    (`num_samples_first_audio_chunk`, `num_samples_per_audio_chunk`), and the STFT framing from the audio
+    processor's `spectrogram_config`.
 
     Parameters:
         processor:
-            A streaming-ASR processor (e.g. `NemotronAsrStreamingProcessor`, `VoxtralRealtimeProcessor`).
+            A streaming-ASR audio processor (e.g. `NemotronAsrStreamingAudioProcessor`), or a processor whose
+            first chunk also needs text inputs (e.g. `VoxtralRealtimeProcessor`). An audio processor is called
+            with `center=True` for the first chunk and `center=False` afterwards; a processor with
+            `is_streaming=True` and `is_first_audio_chunk`.
         device (*optional*):
             Device to move yielded feature chunks (and tensor `model_kwargs`) to.
         dtype (*optional*):
@@ -472,7 +474,7 @@ class AudioIteratorStreamer(BaseInputStreamer):
         >>> from threading import Thread
         >>> from transformers import AudioIteratorStreamer, TextIteratorStreamer
 
-        >>> input_streamer = AudioIteratorStreamer(processor, device=model.device, dtype=model.dtype)
+        >>> input_streamer = AudioIteratorStreamer(processor.audio_processor, device=model.device, dtype=model.dtype)
         >>> output_streamer = TextIteratorStreamer(processor.tokenizer, skip_special_tokens=True)
         >>> generate_kwargs = {
         ...     "input_features": input_streamer,
@@ -501,11 +503,18 @@ class AudioIteratorStreamer(BaseInputStreamer):
         self.dtype = dtype
         self.timeout = timeout
 
-        fe = processor.feature_extractor
-        self._hop = fe.hop_length
-        self._win = fe.win_length
-        self._n_fft = fe.n_fft
-        self._feature_size = fe.feature_size
+        # A processor wraps the audio processor; an audio processor is its own.
+        self._is_audio_processor = not hasattr(processor, "audio_processor")
+        audio_processor = processor if self._is_audio_processor else processor.audio_processor
+        spectrogram_config = audio_processor.spectrogram_config
+        self._hop = spectrogram_config.stft_config.hop_length
+        self._win = spectrogram_config.stft_config.win_length
+        self._n_fft = spectrogram_config.stft_config.n_fft
+        # Features are `(batch, frames, mels)` when transposed, `(batch, mels, frames)` otherwise.
+        self._time_axis = 1 if spectrogram_config.transpose_features else 2
+        # The first (`center=True`) chunk is the only one carrying a trailing padded frame. Drop it here unless
+        # the spectrogram already drops the last frame.
+        self._drops_last = spectrogram_config.drop_last_frame
         self._first_chunk_samples = processor.num_samples_first_audio_chunk
         self._chunk_samples = processor.num_samples_per_audio_chunk
         # Subsequent windows overlap by `win_length` (the STFT window context that `center=False` needs), so
@@ -526,22 +535,16 @@ class AudioIteratorStreamer(BaseInputStreamer):
         self._start = 0  # absolute start of the next subsequent window
         self._exhausted = False  # whether `get()` has raised StopIteration
 
-        # `drops_last`: whether the feature extractor itself drops the trailing padded STFT frame
-        # (`stft[..., :-1]`). If it does, we never trim; if not, we must drop the trailing padded frame of
-        # the first (`center=True`) chunk ourselves. Detected empirically, so no model-specific config or
-        # processor edits are needed.
-        self._drops_last = self._detect_drops_last()
-
         self._model_kwargs = self._compute_model_kwargs()
 
     def _compute_model_kwargs(self):
         # input_ids (voxtral) depends only on the *length* of the first chunk, not its content, so a zero
         # placeholder of the right length yields the correct auxiliary kwargs. Feature output is discarded.
         placeholder = np.zeros(self._first_chunk_samples, dtype=np.float32)
-        batch = self.processor(placeholder, is_streaming=True, is_first_audio_chunk=True, return_tensors="pt")
+        batch = self._process(placeholder, is_first=True)
         kwargs = {}
         for key, value in batch.items():
-            if key in ("input_features", "attention_mask"):
+            if key in ("input_features", "attention_mask", "audio_features", "audio_features_mask"):
                 continue
             # Move aux tensors (e.g. `input_ids`) to device but never cast their dtype: they are integer
             # tensors, unlike the float feature chunks handled in `_extract`. Duck-typed on `.to` to keep
@@ -608,37 +611,16 @@ class AudioIteratorStreamer(BaseInputStreamer):
             self._buffer = self._buffer[drop:]
             self._base += drop
 
-    def _time_axis(self, features):
-        # Time axis = the non-batch axis whose size differs from `feature_size`. Falls back to the last axis
-        # when the layout can't be told apart (e.g. the frame count coincides with `feature_size`).
-        if features.dim() == 3 and features.shape[2] == self._feature_size and features.shape[1] != self._feature_size:
-            return 1
-        return 2
-
-    def _detect_drops_last(self):
-        # Feed a subsequent (`center=False`) chunk: it should yield `1 + (L - n_fft) // hop` frames. A feature
-        # extractor that drops the trailing padded frame (`stft[..., :-1]`) returns one fewer.
-        probe = np.zeros(self._chunk_samples, dtype=np.float32)
-        features = self.processor(
-            probe, is_streaming=True, is_first_audio_chunk=False, return_tensors="pt"
-        ).input_features
-        produced = features.shape[self._time_axis(features)]
-        expected = 1 + (self._chunk_samples - self._n_fft) // self._hop
-        return produced == expected - 1
+    def _process(self, samples, is_first):
+        if self._is_audio_processor:
+            return self.processor(samples, center=is_first, return_tensors="pt")
+        return self.processor(samples, is_streaming=True, is_first_audio_chunk=is_first, return_tensors="pt")
 
     def _extract(self, samples, is_first):
-        batch = self.processor(samples, is_streaming=True, is_first_audio_chunk=is_first, return_tensors="pt")
-        features = batch.input_features
-        # The first chunk is the only `center=True` chunk, so it is the only one carrying a trailing padded
-        # frame. If the feature extractor does not already drop it (`drops_last`), drop it here.
+        features = self._process(samples, is_first).input_features
         if is_first and not self._drops_last:
-            features = self._drop_last_frame(features)
+            features = features[:, :-1] if self._time_axis == 1 else features[:, :, :-1]
         return features.to(device=self.device, dtype=self.dtype)
-
-    def _drop_last_frame(self, features):
-        if self._time_axis(features) == 1:
-            return features[:, :-1]
-        return features[:, :, :-1]
 
     def get(self):
         """Return the next `input_features` chunk. Raises `StopIteration` when the stream is exhausted."""
@@ -696,7 +678,7 @@ class AsyncAudioIteratorStreamer(AudioIteratorStreamer):
 
         ```python
         >>> # Inside an async context, with model.generate running in a worker thread:
-        >>> input_streamer = AsyncAudioIteratorStreamer(processor, device=model.device, dtype=model.dtype)
+        >>> input_streamer = AsyncAudioIteratorStreamer(processor.audio_processor, device=model.device, dtype=model.dtype)
         >>> # ... start the generate thread with input_features=input_streamer and **input_streamer.model_kwargs ...
         >>> async for audio_chunk in mic_source():
         ...     await input_streamer.put(audio_chunk)
