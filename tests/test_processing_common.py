@@ -1126,6 +1126,36 @@ class ProcessorTesterMixin:
         for k, v in inputs.items():
             self.assertIsInstance(v, torch.Tensor, msg=f"{k} should be a torch.Tensor")
 
+    def test_tokenizer_init_kwargs_only_seed_text_kwargs(self):
+        # The tokenizer's init kwargs are text defaults. Seeding them into other modalities applied text
+        # options passed to `from_pretrained` (e.g. `max_length=2048, truncation=True`) to audio as well.
+        if "tokenizer" not in self.processor_class.get_attributes():
+            self.skipTest(f"tokenizer attribute not present in {self.processor_class}")
+        processor = self.get_processor()
+        # As if passed to `from_pretrained`, which hands them to the tokenizer's init
+        tokenizer_init_kwargs = {**processor.tokenizer.init_kwargs, "max_length": 117, "truncation": True}
+
+        merged = processor._merge_kwargs(processor.valid_processor_kwargs, tokenizer_init_kwargs=tokenizer_init_kwargs)
+        defaults = processor.valid_processor_kwargs._defaults
+        for modality in ("images_kwargs", "videos_kwargs", "audio_kwargs"):
+            expected = {**defaults.get(modality, {}), **defaults.get("common_kwargs", {})}
+            self.assertEqual(merged[modality], expected, msg=f"{modality} picked up tokenizer init kwargs")
+
+    def test_from_pretrained_keeps_other_components_kwargs_from_tokenizer(self):
+        # `from_pretrained` forwards its kwargs to every component. A tokenizer keeps whatever it receives and writes
+        # it to `tokenizer_config.json`, so an image option such as `max_pixels` must not reach it.
+        attributes = self.processor_class.get_attributes()
+        if "tokenizer" not in attributes or "image_processor" not in attributes:
+            self.skipTest(f"{self.processor_class} has no tokenizer and image processor")
+        image_processor = self.get_processor().image_processor
+        valid_kwargs = getattr(image_processor, "valid_kwargs", None)
+        if valid_kwargs is None or "do_resize" not in valid_kwargs.__annotations__:
+            self.skipTest(f"{type(image_processor).__name__} does not declare `do_resize`")
+
+        processor = self.processor_class.from_pretrained(self.tmpdirname, do_resize=image_processor.do_resize)
+        self.assertNotIn("do_resize", processor.tokenizer.init_kwargs)
+        self.assertEqual(processor.image_processor.do_resize, image_processor.do_resize)
+
     def test_args_overlap_kwargs(self):
         if "image_processor" not in self.processor_class.get_attributes():
             self.skipTest(f"image_processor attribute not present in {self.processor_class}")

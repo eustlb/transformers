@@ -1598,32 +1598,12 @@ class ProcessorMixin(PushToHubMixin):
         # get defaults from set model processor kwargs if they exist
         for modality in default_kwargs:
             default_kwargs[modality] = ModelProcessorKwargs._defaults.get(modality, {}).copy()
-            # Some preprocessors define a set of accepted "valid_kwargs" (currently only vision).
-            # In those cases, we don’t declare a `ModalityKwargs` attribute in the TypedDict.
-            # Instead, we dynamically obtain the kwargs from the preprocessor and merge them
-            # with the general kwargs set. This ensures consistency between preprocessor and
-            # processor classes, and helps prevent accidental mismatches.
-            modality_valid_kwargs = set(ModelProcessorKwargs.__annotations__[modality].__annotations__)
-            if modality in map_preprocessor_kwargs:
-                preprocessor = getattr(self, map_preprocessor_kwargs[modality], None)
-                preprocessor_valid_kwargs = (
-                    getattr(preprocessor, "valid_kwargs", None) if preprocessor is not None else None
-                )
-                modality_valid_kwargs.update(
-                    set(preprocessor_valid_kwargs.__annotations__ if preprocessor_valid_kwargs is not None else [])
-                )
-            # update defaults with arguments from tokenizer init
-            for modality_key in modality_valid_kwargs:
-                # init with tokenizer init kwargs if necessary
-                if tokenizer_init_kwargs is not None and modality_key in tokenizer_init_kwargs:
-                    value = (
-                        getattr(self.tokenizer, modality_key)
-                        if hasattr(self.tokenizer, modality_key)
-                        else tokenizer_init_kwargs[modality_key]
-                    )
-                    default_kwargs[modality][modality_key] = value
-        # now defaults kwargs are updated with the tokenizers defaults.
-        # pass defaults to output dictionary
+
+        # The tokenizer's init kwargs are text defaults
+        if tokenizer_init_kwargs is not None:
+            for key in ModelProcessorKwargs.__annotations__["text_kwargs"].__annotations__:
+                if key in tokenizer_init_kwargs:
+                    default_kwargs["text_kwargs"][key] = getattr(self.tokenizer, key, tokenizer_init_kwargs[key])
         output_kwargs.update(default_kwargs)
 
         # For `common_kwargs` just update all modality-specific kwargs with same key/values
@@ -1861,6 +1841,7 @@ class ProcessorMixin(PushToHubMixin):
 
         # get args from processor init signature
         sub_processors = cls.get_attributes()
+        tokenizer_slots = []
         for sub_processor_type in sub_processors:
             modality = _get_modality_for_attribute(sub_processor_type)
             is_primary = sub_processor_type == modality
@@ -1869,17 +1850,9 @@ class ProcessorMixin(PushToHubMixin):
                 "tokenizer" in sub_processor_type
             ):  # This is only necessary for the checkpoint in test_processing_mistral3.py which has no config.json and
                 # the tokenizer_config.json references LlamaTokenizerFast. TODO: update the config on the hub.
-                if "PixtralProcessor" in cls.__name__:
-                    from .tokenization_utils_tokenizers import TokenizersBackend
-
-                    tokenizer = TokenizersBackend.from_pretrained(
-                        pretrained_model_name_or_path, subfolder=subfolder, **kwargs
-                    )
-                else:
-                    tokenizer = cls._load_tokenizer_from_pretrained(
-                        sub_processor_type, pretrained_model_name_or_path, subfolder=subfolder, **kwargs
-                    )
-                args.append(tokenizer)
+                # Loaded last, once we know which kwargs the other components own
+                tokenizer_slots.append((len(args), sub_processor_type))
+                args.append(None)
             elif is_primary:
                 # Primary non-tokenizer sub-processor: load via Auto class
                 auto_processor_class = MODALITY_TO_AUTOPROCESSOR_MAPPING[sub_processor_type]
@@ -1921,6 +1894,29 @@ class ProcessorMixin(PushToHubMixin):
                 raise ValueError(
                     f"Cannot find config for {sub_processor_type} in processor_config.json. "
                     f"Available keys: {list(processor_dict.keys())}"
+                )
+
+        # A kwarg another component declares (e.g. `max_pixels`) is not the tokenizer's: a tokenizer keeps every
+        # kwarg it receives and writes it to `tokenizer_config.json`. Text options keep reaching it even when another
+        # component shares the name (e.g. `max_length`).
+        owned_by_others = set()
+        for sub_processor in args:
+            valid_kwargs = getattr(sub_processor, "valid_kwargs", None)
+            if valid_kwargs is not None:
+                owned_by_others |= set(valid_kwargs.__annotations__)
+        owned_by_others -= set(cls.valid_processor_kwargs.__annotations__["text_kwargs"].__annotations__)
+        tokenizer_kwargs = {key: value for key, value in kwargs.items() if key not in owned_by_others}
+
+        for index, sub_processor_type in tokenizer_slots:
+            if "PixtralProcessor" in cls.__name__:
+                from .tokenization_utils_tokenizers import TokenizersBackend
+
+                args[index] = TokenizersBackend.from_pretrained(
+                    pretrained_model_name_or_path, subfolder=subfolder, **tokenizer_kwargs
+                )
+            else:
+                args[index] = cls._load_tokenizer_from_pretrained(
+                    sub_processor_type, pretrained_model_name_or_path, subfolder=subfolder, **tokenizer_kwargs
                 )
 
         return args
